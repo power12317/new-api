@@ -242,6 +242,60 @@ func TestGetPreferredChannelByAffinity_RequestHeaderKeySource(t *testing.T) {
 	require.Equal(t, buildChannelAffinityKeyHint(affinityValue), meta.KeyHint)
 }
 
+func TestGetPreferredChannelByAffinitySerializesConcurrentMisses(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setting := operation_setting.GetChannelAffinitySetting()
+	originalRules := setting.Rules
+	rule := operation_setting.ChannelAffinityRule{
+		Name:              "concurrent-token-affinity",
+		ModelRegex:        []string{"^gpt-.*$"},
+		KeySources:        []operation_setting.ChannelAffinityKeySource{{Type: "context_int", Key: "token_id"}},
+		TTLSeconds:        60,
+		IncludeUsingGroup: true,
+		IncludeRuleName:   true,
+	}
+	setting.Rules = []operation_setting.ChannelAffinityRule{rule}
+	t.Cleanup(func() { setting.Rules = originalRules })
+
+	cacheKeySuffix := buildChannelAffinityCacheKeySuffix(rule, "gpt-5", "default", "987654")
+	cache := getChannelAffinityCache()
+	t.Cleanup(func() { _, _ = cache.DeleteMany([]string{cacheKeySuffix}) })
+
+	newContext := func() *gin.Context {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		ctx.Set("token_id", 987654)
+		return ctx
+	}
+	first := newContext()
+	_, found := GetPreferredChannelByAffinity(first, "gpt-5", "default")
+	require.False(t, found)
+
+	second := newContext()
+	result := make(chan struct {
+		id    int
+		found bool
+	}, 1)
+	go func() {
+		id, hit := GetPreferredChannelByAffinity(second, "gpt-5", "default")
+		result <- struct {
+			id    int
+			found bool
+		}{id: id, found: hit}
+	}()
+
+	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, 4321, time.Minute))
+	ReleaseChannelAffinitySelection(first)
+	select {
+	case got := <-result:
+		require.True(t, got.found)
+		require.Equal(t, 4321, got.id)
+	case <-time.After(time.Second):
+		t.Fatal("concurrent affinity lookup did not complete")
+	}
+}
+
 func TestClearCurrentChannelAffinityCache(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -46,8 +46,32 @@ export interface CacheStats {
   total: number
   unknown: number
   by_rule_name: Record<string, number>
+  by_channel_id: Record<string, number>
   cache_capacity: number
   cache_algo: string
+}
+
+export interface CacheEntry {
+  key: string
+  key_suffix: string
+  rule_name: string
+  using_group: string
+  model_name: string
+  affinity_value: string
+  key_hint: string
+  key_fp: string
+  channel_id: number
+  channel_name: string
+  token_id?: number
+  user_id?: number
+  username?: string
+  token_name?: string
+  ttl_seconds: number
+}
+
+export interface CacheEntryList {
+  entries: CacheEntry[]
+  total: number
 }
 
 export interface ChannelAffinitySettings {

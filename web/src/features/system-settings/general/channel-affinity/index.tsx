@@ -49,6 +49,7 @@ import { handleServerError } from '@/lib/handle-server-error'
 import { cn } from '@/lib/utils'
 
 import { getCacheStats, clearAllCache, clearRuleCache } from './api'
+import { CacheEntriesDialog } from './cache-entries-dialog'
 import { RULE_TEMPLATES, cloneTemplate, makeUniqueName } from './constants'
 import { RuleEditorDialog } from './rule-editor-dialog'
 import { SessionRulesTable } from './session-rules-table'
@@ -93,6 +94,7 @@ export function ChannelAffinitySection(props: Props) {
   const [clearAllDialogOpen, setClearAllDialogOpen] = useState(false)
   const [clearRuleName, setClearRuleName] = useState<string | null>(null)
   const [fillTemplateDialogOpen, setFillTemplateDialogOpen] = useState(false)
+  const [cacheEntriesDialogOpen, setCacheEntriesDialogOpen] = useState(false)
 
   const refreshCache = useCallback(async () => {
     setCacheLoading(true)
@@ -366,6 +368,13 @@ export function ChannelAffinitySection(props: Props) {
             <Button
               variant='ghost'
               size='sm'
+              onClick={() => setCacheEntriesDialogOpen(true)}
+            >
+              {t('Manage Entries')}
+            </Button>
+            <Button
+              variant='ghost'
+              size='sm'
               onClick={() => setClearAllDialogOpen(true)}
             >
               <Trash2 aria-hidden='true' />
@@ -404,6 +413,11 @@ export function ChannelAffinitySection(props: Props) {
         onSave={handleRuleSave}
         templateKey={ruleTemplateKey}
         globalSessionMode={props.globalSessionMode}
+      />
+
+      <CacheEntriesDialog
+        open={cacheEntriesDialogOpen}
+        onOpenChange={setCacheEntriesDialogOpen}
       />
 
       <ConfirmDialog

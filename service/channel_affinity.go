@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"maps"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ const (
 	ginKeyChannelAffinityMeta       = "channel_affinity_meta"
 	ginKeyChannelAffinityLogInfo    = "channel_affinity_log_info"
 	ginKeyChannelAffinitySkipRetry  = "channel_affinity_skip_retry_on_failure"
+	ginKeyChannelAffinityLock       = "channel_affinity_selection_lock"
 
 	channelAffinityCacheNamespace           = "new-api:channel_affinity:v1"
 	channelAffinityUsageCacheStatsNamespace = "new-api:channel_affinity_usage_cache_stats:v1"
@@ -39,7 +41,8 @@ var (
 	channelAffinityUsageCacheStatsOnce  sync.Once
 	channelAffinityUsageCacheStatsCache *cachex.HybridCache[ChannelAffinityUsageCacheCounters]
 
-	channelAffinityRegexCache sync.Map // map[string]*regexp.Regexp
+	channelAffinityRegexCache     sync.Map // map[string]*regexp.Regexp
+	channelAffinitySelectionLocks [256]sync.Mutex
 )
 
 type channelAffinityMeta struct {
@@ -76,8 +79,35 @@ type ChannelAffinityCacheStats struct {
 	Total         int            `json:"total"`
 	Unknown       int            `json:"unknown"`
 	ByRuleName    map[string]int `json:"by_rule_name"`
+	ByChannelID   map[int]int    `json:"by_channel_id"`
 	CacheCapacity int            `json:"cache_capacity"`
 	CacheAlgo     string         `json:"cache_algo"`
+}
+
+// ChannelAffinityCacheEntry is an administrative view of one live affinity
+// binding. Key is the namespaced cache key; KeySuffix is the user-facing form
+// without the cache namespace.
+type ChannelAffinityCacheEntry struct {
+	Key            string `json:"key"`
+	KeySuffix      string `json:"key_suffix"`
+	RuleName       string `json:"rule_name"`
+	UsingGroup     string `json:"using_group"`
+	ModelName      string `json:"model_name"`
+	AffinityValue  string `json:"affinity_value"`
+	KeyHint        string `json:"key_hint"`
+	KeyFingerprint string `json:"key_fp"`
+	ChannelID      int    `json:"channel_id"`
+	ChannelName    string `json:"channel_name"`
+	TokenID        int    `json:"token_id,omitempty"`
+	UserID         int    `json:"user_id,omitempty"`
+	Username       string `json:"username,omitempty"`
+	TokenName      string `json:"token_name,omitempty"`
+	TTLSeconds     int64  `json:"ttl_seconds"`
+}
+
+type ChannelAffinityCacheList struct {
+	Entries []ChannelAffinityCacheEntry `json:"entries"`
+	Total   int                         `json:"total"`
 }
 
 func getChannelAffinityCache() *cachex.HybridCache[int] {
@@ -110,14 +140,50 @@ func getChannelAffinityCache() *cachex.HybridCache[int] {
 	return channelAffinityCache
 }
 
+func channelAffinitySelectionLock(key string) *sync.Mutex {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return &channelAffinitySelectionLocks[h.Sum32()%uint32(len(channelAffinitySelectionLocks))]
+}
+
+func beginChannelAffinitySelection(c *gin.Context, key string) {
+	if c == nil || key == "" {
+		return
+	}
+	lock := channelAffinitySelectionLock(key)
+	lock.Lock()
+	c.Set(ginKeyChannelAffinityLock, lock)
+}
+
+// ReleaseChannelAffinitySelection releases the per-key first-selection lock.
+// It is safe to call more than once, which lets request handlers defer it while
+// successful requests also release it when the binding is recorded.
+func ReleaseChannelAffinitySelection(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	value, exists := c.Get(ginKeyChannelAffinityLock)
+	if !exists {
+		return
+	}
+	lock, ok := value.(*sync.Mutex)
+	if !ok || lock == nil {
+		c.Set(ginKeyChannelAffinityLock, nil)
+		return
+	}
+	lock.Unlock()
+	c.Set(ginKeyChannelAffinityLock, nil)
+}
+
 func GetChannelAffinityCacheStats() ChannelAffinityCacheStats {
 	setting := operation_setting.GetChannelAffinitySetting()
 	if setting == nil {
 		return ChannelAffinityCacheStats{
-			Enabled:    false,
-			Total:      0,
-			Unknown:    0,
-			ByRuleName: map[string]int{},
+			Enabled:     false,
+			Total:       0,
+			Unknown:     0,
+			ByRuleName:  map[string]int{},
+			ByChannelID: map[int]int{},
 		}
 	}
 
@@ -150,7 +216,15 @@ func GetChannelAffinityCacheStats() ChannelAffinityCacheStats {
 	}
 	total := len(keys)
 	unknown := 0
+	byChannelID := make(map[int]int)
+	values, valuesErr := cache.GetMany(keys)
+	if valuesErr != nil {
+		common.SysError(fmt.Sprintf("channel affinity cache bulk get failed: err=%v", valuesErr))
+	}
 	for _, k := range keys {
+		if channelID, found := values[k]; found {
+			byChannelID[channelID]++
+		}
 		prefix := channelAffinityCacheNamespace + ":"
 		if !strings.HasPrefix(k, prefix) {
 			unknown++
@@ -192,6 +266,7 @@ func GetChannelAffinityCacheStats() ChannelAffinityCacheStats {
 		Total:         total,
 		Unknown:       unknown,
 		ByRuleName:    byRuleName,
+		ByChannelID:   byChannelID,
 		CacheCapacity: mainCap,
 		CacheAlgo:     mainAlgo,
 	}
@@ -245,6 +320,207 @@ func ClearChannelAffinityCacheByRuleName(ruleName string) (int, error) {
 		return 0, err
 	}
 	return deleted, nil
+}
+
+type parsedChannelAffinityKey struct {
+	ruleName      string
+	modelName     string
+	usingGroup    string
+	affinityValue string
+}
+
+func parseChannelAffinityKeySuffix(suffix string, rules []operation_setting.ChannelAffinityRule) parsedChannelAffinityKey {
+	for _, rule := range rules {
+		name := strings.TrimSpace(rule.Name)
+		if !rule.IncludeRuleName || name == "" {
+			continue
+		}
+		prefix := name + ":"
+		if !strings.HasPrefix(suffix, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(suffix, prefix)
+		parsed := parsedChannelAffinityKey{ruleName: name}
+		if rule.IncludeModelName {
+			var value string
+			value, rest, _ = strings.Cut(rest, ":")
+			parsed.modelName = value
+		}
+		if rule.IncludeUsingGroup {
+			var value string
+			value, rest, _ = strings.Cut(rest, ":")
+			parsed.usingGroup = value
+		}
+		parsed.affinityValue = rest
+		return parsed
+	}
+	return parsedChannelAffinityKey{affinityValue: suffix}
+}
+
+func channelAffinityRuleByName(name string) *operation_setting.ChannelAffinityRule {
+	setting := operation_setting.GetChannelAffinitySetting()
+	if setting == nil {
+		return nil
+	}
+	for i := range setting.Rules {
+		if strings.TrimSpace(setting.Rules[i].Name) == name {
+			return &setting.Rules[i]
+		}
+	}
+	return nil
+}
+
+func channelAffinityIsTokenIDRule(rule *operation_setting.ChannelAffinityRule) bool {
+	if rule == nil {
+		return false
+	}
+	for _, source := range rule.KeySources {
+		if source.Type == "context_int" && strings.TrimSpace(source.Key) == "token_id" {
+			return true
+		}
+	}
+	return false
+}
+
+// ListChannelAffinityCacheEntries returns live bindings for the admin cache manager.
+func ListChannelAffinityCacheEntries(page, pageSize int, query, ruleName string, channelID int) (ChannelAffinityCacheList, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 500 {
+		pageSize = 100
+	}
+	cache := getChannelAffinityCache()
+	keys, err := cache.Keys()
+	if err != nil {
+		return ChannelAffinityCacheList{}, err
+	}
+	slices.Sort(keys)
+	setting := operation_setting.GetChannelAffinitySetting()
+	rules := []operation_setting.ChannelAffinityRule(nil)
+	if setting != nil {
+		rules = setting.Rules
+	}
+	query = strings.TrimSpace(strings.ToLower(query))
+	filtered := make([]ChannelAffinityCacheEntry, 0, len(keys))
+	tokenCache := make(map[int]*model.Token)
+	usernameCache := make(map[int]string)
+	values, valuesErr := cache.GetMany(keys)
+	if valuesErr != nil {
+		return ChannelAffinityCacheList{}, valuesErr
+	}
+	for _, fullKey := range keys {
+		value, found := values[fullKey]
+		if !found {
+			continue
+		}
+		suffix := strings.TrimPrefix(fullKey, channelAffinityCacheNamespace+":")
+		parsed := parseChannelAffinityKeySuffix(suffix, rules)
+		if ruleName != "" && parsed.ruleName != ruleName {
+			continue
+		}
+		if channelID > 0 && value != channelID {
+			continue
+		}
+		entry := ChannelAffinityCacheEntry{
+			Key:            fullKey,
+			KeySuffix:      suffix,
+			RuleName:       parsed.ruleName,
+			UsingGroup:     parsed.usingGroup,
+			ModelName:      parsed.modelName,
+			AffinityValue:  parsed.affinityValue,
+			KeyHint:        buildChannelAffinityKeyHint(parsed.affinityValue),
+			KeyFingerprint: affinityFingerprint(parsed.affinityValue),
+			ChannelID:      value,
+		}
+		if ttl, ttlErr := cache.TTL(fullKey); ttlErr == nil && ttl > 0 {
+			entry.TTLSeconds = int64(ttl / time.Second)
+		}
+		if channel, channelErr := model.CacheGetChannel(value); channelErr == nil && channel != nil {
+			entry.ChannelName = channel.Name
+		}
+		if rule := channelAffinityRuleByName(parsed.ruleName); channelAffinityIsTokenIDRule(rule) {
+			if tokenID, parseErr := strconv.Atoi(parsed.affinityValue); parseErr == nil && tokenID > 0 {
+				token, tokenFound := tokenCache[tokenID]
+				if !tokenFound {
+					token, _ = model.GetTokenById(tokenID)
+					tokenCache[tokenID] = token
+				}
+				if token != nil {
+					entry.TokenID = token.Id
+					entry.UserID = token.UserId
+					entry.TokenName = token.Name
+					if username, usernameFound := usernameCache[token.UserId]; usernameFound {
+						entry.Username = username
+					} else if username, usernameErr := model.GetUsernameById(token.UserId, false); usernameErr == nil {
+						usernameCache[token.UserId] = username
+						entry.Username = username
+					}
+				}
+			}
+		}
+		if query != "" {
+			searchable := strings.ToLower(strings.Join([]string{
+				suffix,
+				parsed.affinityValue,
+				entry.Username,
+				entry.TokenName,
+				strconv.Itoa(value),
+				strconv.Itoa(entry.UserID),
+				strconv.Itoa(entry.TokenID),
+			}, " "))
+			if !strings.Contains(searchable, query) {
+				continue
+			}
+		}
+		filtered = append(filtered, entry)
+	}
+
+	start := (page - 1) * pageSize
+	if start >= len(filtered) {
+		return ChannelAffinityCacheList{Entries: []ChannelAffinityCacheEntry{}, Total: len(filtered)}, nil
+	}
+	end := min(start+pageSize, len(filtered))
+	return ChannelAffinityCacheList{Entries: filtered[start:end], Total: len(filtered)}, nil
+}
+
+func DeleteChannelAffinityCacheEntry(key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("缓存 key 不能为空")
+	}
+	cache := getChannelAffinityCache()
+	deleted, err := cache.DeleteMany([]string{key})
+	if err != nil {
+		return err
+	}
+	for _, ok := range deleted {
+		if ok {
+			return nil
+		}
+	}
+	return fmt.Errorf("缓存条目不存在或已过期")
+}
+
+func UpdateChannelAffinityCacheEntry(key string, channelID, ttlSeconds int) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("缓存 key 不能为空")
+	}
+	if channelID <= 0 {
+		return fmt.Errorf("渠道 ID 必须大于 0")
+	}
+	if _, err := model.GetChannelById(channelID, true); err != nil {
+		return fmt.Errorf("渠道 #%d 不存在", channelID)
+	}
+	setting := operation_setting.GetChannelAffinitySetting()
+	if ttlSeconds <= 0 && setting != nil {
+		ttlSeconds = setting.DefaultTTLSeconds
+	}
+	if ttlSeconds <= 0 {
+		ttlSeconds = 3600
+	}
+	return getChannelAffinityCache().SetWithTTL(key, channelID, time.Duration(ttlSeconds)*time.Second)
 }
 
 func matchAnyRegexCached(patterns []string, s string) bool {
@@ -617,12 +893,15 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 			return 0, false
 		}
 		cache := getChannelAffinityCache()
+		beginChannelAffinitySelection(c, cacheKeyFull)
 		channelID, found, err := cache.Get(cacheKeySuffix)
 		if err != nil {
+			ReleaseChannelAffinitySelection(c)
 			common.SysError(fmt.Sprintf("channel affinity cache get failed: key=%s, err=%v", cacheKeyFull, err))
 			return 0, false
 		}
 		if found {
+			ReleaseChannelAffinitySelection(c)
 			return channelID, true
 		}
 		return 0, false
@@ -660,10 +939,12 @@ func ClearCurrentChannelAffinityCache(c *gin.Context) bool {
 	cache := getChannelAffinityCache()
 	deleted, err := cache.DeleteMany([]string{cacheKey})
 	if err != nil {
+		ReleaseChannelAffinitySelection(c)
 		common.SysError(fmt.Sprintf("channel affinity cache delete current failed: err=%v", err))
 		return false
 	}
 	c.Set(ginKeyChannelAffinitySkipRetry, false)
+	ReleaseChannelAffinitySelection(c)
 	for _, ok := range deleted {
 		if ok {
 			return true
@@ -754,6 +1035,7 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 	if err := cache.SetWithTTL(cacheKey, channelID, time.Duration(ttlSeconds)*time.Second); err != nil {
 		common.SysError(fmt.Sprintf("channel affinity cache set failed: key=%s, err=%v", cacheKey, err))
 	}
+	ReleaseChannelAffinitySelection(c)
 }
 
 type ChannelAffinityUsageCacheStats struct {

@@ -108,6 +108,52 @@ func (c *HybridCache[V]) Get(key string) (value V, found bool, err error) {
 	return c.memCache().Get(full)
 }
 
+// GetMany returns the cached values for the supplied keys. Missing keys are
+// omitted from the result. Redis uses one MGET round trip so administrative
+// cache listings do not issue one network request per entry.
+func (c *HybridCache[V]) GetMany(keys []string) (map[string]V, error) {
+	result := make(map[string]V, len(keys))
+	if len(keys) == 0 {
+		return result, nil
+	}
+	fullKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if full := c.ns.FullKey(key); full != "" {
+			fullKeys = append(fullKeys, full)
+		}
+	}
+	if len(fullKeys) == 0 {
+		return result, nil
+	}
+
+	if c.redisOn() {
+		ctx, cancel := context.WithTimeout(context.Background(), defaultRedisOpTimeout)
+		defer cancel()
+		rawValues, err := c.redis.MGet(ctx, fullKeys...).Result()
+		if err != nil {
+			return result, err
+		}
+		for i, raw := range rawValues {
+			if raw == nil || i >= len(fullKeys) {
+				continue
+			}
+			encoded, ok := raw.(string)
+			if !ok {
+				continue
+			}
+			value, decodeErr := c.redisCodec.Decode(encoded)
+			if decodeErr != nil {
+				return result, decodeErr
+			}
+			result[fullKeys[i]] = value
+		}
+		return result, nil
+	}
+
+	values, _, err := c.memCache().GetMany(fullKeys)
+	return values, err
+}
+
 func (c *HybridCache[V]) SetWithTTL(key string, v V, ttl time.Duration) error {
 	full := c.ns.FullKey(key)
 	if full == "" {
@@ -126,6 +172,24 @@ func (c *HybridCache[V]) SetWithTTL(key string, v V, ttl time.Duration) error {
 
 	c.memCache().SetWithTTL(full, v, ttl)
 	return nil
+}
+
+// TTL returns the remaining lifetime for a key when Redis backs the cache.
+// In-memory hot cache entries do not expose their individual expiry, so the
+// method returns 0 for that backend.
+func (c *HybridCache[V]) TTL(key string) (time.Duration, error) {
+	full := c.ns.FullKey(key)
+	if full == "" || !c.redisOn() {
+		return 0, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), defaultRedisOpTimeout)
+	defer cancel()
+	ttl, err := c.redis.TTL(ctx, full).Result()
+	if err != nil {
+		return 0, err
+	}
+	return ttl, nil
 }
 
 // Keys returns keys with valid values. In Redis, it returns all matching keys.
