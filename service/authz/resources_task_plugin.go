@@ -17,6 +17,7 @@ func init() {
 				Action:         ActionBind,
 				LabelKey:       "Bind task plugins",
 				DescriptionKey: "List registered task plugins and bind them when creating or editing task plugin channels.",
+				DefaultRoles:   []string{BuiltInRoleAdmin},
 			},
 		},
 	})

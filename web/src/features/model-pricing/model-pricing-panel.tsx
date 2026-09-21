@@ -116,7 +116,7 @@ export function ModelPricingPanel(props: {
   if (!canEdit) {
     return (
       <div className='text-muted-foreground p-6 text-sm'>
-        {t('Model pricing is managed by a super administrator.')}
+        {t('Model pricing is managed by an administrator.')}
       </div>
     )
   }

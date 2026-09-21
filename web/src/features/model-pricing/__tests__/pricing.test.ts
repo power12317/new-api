@@ -16,9 +16,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { renderHook, cleanup } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
-import { buildPricingChanges, type ModelPricingConfig } from '../api'
+import { useAuthStore } from '@/stores/auth-store'
+
+import {
+  useCanEditModelPricing,
+  buildPricingChanges,
+  type ModelPricingConfig,
+} from '../api'
 import {
   applyPriceSyncSelections,
   applyPricingDraft,
@@ -234,4 +241,21 @@ it('commits source provider edits while preserving target providers during batch
     'alpha::source': '3',
     'beta::target': '2',
   })
+})
+
+it.each([
+  [1, false],
+  [10, true],
+  [100, true],
+])('pricing editing for role %s is %s', (role, allowed) => {
+  useAuthStore
+    .getState()
+    .auth.setUser({ id: 1, username: 'pricing-viewer', role })
+  try {
+    const { result } = renderHook(() => useCanEditModelPricing())
+    expect(result.current).toBe(allowed)
+  } finally {
+    cleanup()
+    useAuthStore.getState().auth.reset()
+  }
 })

@@ -530,11 +530,11 @@ func calculateUserPermissions(userRole int) map[string]any {
 		permissions["sidebar_settings"] = false
 		permissions["sidebar_modules"] = map[string]any{}
 	} else if userRole == common.RoleAdminUser {
-		// 管理员可以设置边栏，但不包含系统设置功能
+		// 管理员可以配置边栏并访问系统设置
 		permissions["sidebar_settings"] = true
 		permissions["sidebar_modules"] = map[string]any{
 			"admin": map[string]any{
-				"setting": false, // 管理员不能访问系统设置
+				"setting": true,
 			},
 		}
 	} else {
@@ -578,14 +578,14 @@ func generateDefaultSidebarConfig(userRole int) string {
 
 	// 管理员区域 - 根据角色决定
 	if userRole == common.RoleAdminUser {
-		// 管理员可以访问管理员区域，但不能访问系统设置
+		// 管理员可以访问日常管理功能
 		defaultConfig["admin"] = map[string]any{
 			"enabled":    true,
 			"channel":    true,
 			"models":     true,
 			"redemption": true,
 			"user":       true,
-			"setting":    false, // 管理员不能访问系统设置
+			"setting":    true,
 		}
 	} else if userRole == common.RoleRootUser {
 		// 超级管理员可以访问所有功能

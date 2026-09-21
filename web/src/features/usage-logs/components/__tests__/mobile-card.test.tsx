@@ -121,13 +121,13 @@ it('opens long channel text on tap and copies the complete value', async () => {
   ).toHaveFocus()
 })
 
-it('keeps the model clamped to two lines and exposes its full value with keyboard input', async () => {
+it('keeps the request model on one line and exposes its full value with keyboard input', async () => {
   const user = userEvent.setup()
   renderLogs()
   const button = screen.getByRole('button', { name: `Model: ${longName}` })
   expect(within(button).getByText(longName)).toHaveClass(
-    'line-clamp-2',
-    '[overflow-wrap:anywhere]'
+    'truncate',
+    'whitespace-nowrap'
   )
   button.focus()
   await user.keyboard('{Enter}')

@@ -164,44 +164,49 @@ describe('model deletion', () => {
   })
 })
 
-it('lets a super administrator remove pricing independently of channel removal', async () => {
-  useAuthStore.getState().auth.setUser({ id: 1, username: 'root', role: 100 })
-  const post = vi.spyOn(api, 'post').mockResolvedValue({
-    data: { success: true, data: { deleted_count: 2, updated_channels: 0 } },
-  })
-  const { onSuccess, invalidate } = mount(true)
-  const user = userEvent.setup()
-  expect(
-    screen.getByRole('checkbox', { name: 'Also remove pricing' })
-  ).not.toBeChecked()
-  await user.click(
-    screen.getByRole('checkbox', { name: 'Also remove pricing' })
-  )
-  expect(
-    screen.getByText(/Built-in pricing may become effective again/)
-  ).toBeVisible()
-  expect(screen.queryByText(/Pricing will be retained/)).not.toBeInTheDocument()
-  await user.click(screen.getByRole('button', { name: 'Delete' }))
-  await waitFor(() => expect(onSuccess).toHaveBeenCalledOnce())
-  expect(post).toHaveBeenCalledWith('/api/models/delete', {
-    model_ids: [7, 8],
-    remove_from_channels: false,
-    remove_pricing: true,
-  })
-  expect(invalidate).toHaveBeenCalledWith({
-    queryKey: ['model-pricing-config'],
-  })
-  expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['channels'] })
-})
+it.each([10, 100])(
+  'lets administrator role %s remove pricing independently of channel removal',
+  async (role) => {
+    useAuthStore.getState().auth.setUser({ id: 1, username: 'operator', role })
+    const post = vi.spyOn(api, 'post').mockResolvedValue({
+      data: { success: true, data: { deleted_count: 2, updated_channels: 0 } },
+    })
+    const { onSuccess, invalidate } = mount(true)
+    const user = userEvent.setup()
+    expect(
+      screen.getByRole('checkbox', { name: 'Also remove pricing' })
+    ).not.toBeChecked()
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Also remove pricing' })
+    )
+    expect(
+      screen.getByText(/Built-in pricing may become effective again/)
+    ).toBeVisible()
+    expect(
+      screen.queryByText(/Pricing will be retained/)
+    ).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledOnce())
+    expect(post).toHaveBeenCalledWith('/api/models/delete', {
+      model_ids: [7, 8],
+      remove_from_channels: false,
+      remove_pricing: true,
+    })
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['model-pricing-config'],
+    })
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['channels'] })
+  }
+)
 
-it('keeps pricing removal unavailable to an ordinary administrator', () => {
-  useAuthStore.getState().auth.setUser({ id: 2, username: 'admin', role: 10 })
+it('keeps pricing removal unavailable to an ordinary user', () => {
+  useAuthStore.getState().auth.setUser({ id: 2, username: 'user', role: 1 })
   mount()
   expect(
     screen.getByRole('checkbox', { name: 'Also remove pricing' })
   ).toHaveAttribute('aria-disabled', 'true')
   expect(
-    screen.getByText('Model pricing is managed by a super administrator.')
+    screen.getByText('Model pricing is managed by an administrator.')
   ).toBeVisible()
 })
 

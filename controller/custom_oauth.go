@@ -140,7 +140,7 @@ type FetchCustomOAuthDiscoveryRequest struct {
 	IssuerURL    string `json:"issuer_url"`
 }
 
-// FetchCustomOAuthDiscovery fetches OIDC discovery document via backend (root-only route)
+// FetchCustomOAuthDiscovery fetches OIDC discovery document via backend (administrator-only route)
 func FetchCustomOAuthDiscovery(c *gin.Context) {
 	var req FetchCustomOAuthDiscoveryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

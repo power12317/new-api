@@ -1443,7 +1443,7 @@ func TestModelDeletionDatabaseMatrix(t *testing.T) {
 					body := map[string]any{"model_ids": []int{metadata.Id}, "remove_from_channels": removeChannels, "remove_pricing": true}
 					for _, single := range []bool{false, true} {
 						recorder := modelManagementRequest(t, func(c *gin.Context) {
-							c.Set("role", common.RoleAdminUser)
+							c.Set("role", common.RoleCommonUser)
 							if single {
 								c.Params = gin.Params{{Key: "id", Value: strconv.Itoa(metadata.Id)}}
 								DeleteModelMeta(c)
@@ -1476,7 +1476,15 @@ func TestModelDeletionDatabaseMatrix(t *testing.T) {
 					assert.Equal(t, channel.Models, channelAfter.Models)
 					_, err = model.DeleteModelMetadata([]int{metadata.Id, 999999}, removeChannels, true)
 					assert.Error(t, err, "a missing model aborts the whole batch")
-					recorder := modelManagementRequest(t, BatchDeleteModelMeta, http.MethodPost, "/api/models/delete", body, &response)
+					recorder := modelManagementRequest(t, func(c *gin.Context) {
+						c.Set("role", common.RoleAdminUser)
+						if removeChannels {
+							BatchDeleteModelMeta(c)
+							return
+						}
+						c.Params = gin.Params{{Key: "id", Value: strconv.Itoa(metadata.Id)}}
+						DeleteModelMeta(c)
+					}, http.MethodPost, "/api/models/delete?remove_pricing=true", body, &response)
 					require.True(t, response.Success, recorder.Body.String())
 					after, err = model.GetModelPricingSnapshot([]string{name, keep})
 					require.NoError(t, err)

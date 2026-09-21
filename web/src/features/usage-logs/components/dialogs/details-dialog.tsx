@@ -88,6 +88,7 @@ import {
   isTimingLogType,
 } from '../../lib/utils'
 import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
+import { UpstreamResponseDetails } from '../log-upstream-status'
 import { PluginAuthorLink } from '../plugin-author-link'
 import { DetailRow, DetailSection } from './log-detail-layout'
 
@@ -477,6 +478,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const { t } = useTranslation()
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const other = parseLogOther(props.log.other)
+  const requestModel = other?.request_model || props.log.model_name
   const typeConfig = getLogTypeConfig(props.log.type)
 
   const isViolation = isViolationFeeLog(other)
@@ -647,6 +649,36 @@ export function DetailsDialog(props: DetailsDialogProps) {
       bodyClassName='pr-2 sm:pr-4'
     >
       <div className='w-full max-w-full min-w-0 space-y-2.5 overflow-x-hidden py-1 sm:space-y-3'>
+        {[2, 5].includes(props.log.type) && !other?.is_task && (
+          <DetailSection label={t('Upstream Response')}>
+            <DetailRow label={t('Request Model')} value={requestModel} mono />
+            {other?.request_reasoning_effort && (
+              <DetailRow
+                label={t('Request Reasoning Effort')}
+                value={other.request_reasoning_effort}
+              />
+            )}
+            <DetailRow
+              label={t('Response Model')}
+              value={
+                other?.response_model ||
+                (other?.response_model === undefined
+                  ? t('Not recorded')
+                  : t('Not returned'))
+              }
+              mono
+            />
+            {other?.response_model && other.response_model !== requestModel && (
+              <StatusBadge
+                label={t('Model mismatch')}
+                variant='warning'
+                size='sm'
+                copyable={false}
+              />
+            )}
+            <UpstreamResponseDetails other={other} />
+          </DetailSection>
+        )}
         {/* Overview section - key identifiers */}
         <div className='min-w-0 space-y-1'>
           {props.log.request_id && (

@@ -17,11 +17,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  createRouter,
+  createRootRoute,
+  createMemoryHistory,
+  RouterContextProvider,
+} from '@tanstack/react-router'
 import { cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { useAuthStore } from '@/stores/auth-store'
+
 import { ChannelHealthSection } from '../channel-health-section'
 import { defaultRequestPolicySettings } from '../defaults'
+import { RelatedPolicyLink } from '../related-policy-link'
 
 let client: QueryClient
 
@@ -34,6 +43,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   client.clear()
+  useAuthStore.getState().auth.reset()
 })
 
 function show() {
@@ -99,3 +109,28 @@ describe('channel health layout', () => {
     }
   })
 })
+
+it.each([1, 10, 100])(
+  'channel request policy links respect administrator access for role %s',
+  (role) => {
+    useAuthStore.getState().auth.setUser({ id: 1, username: 'viewer', role })
+    const router = createRouter({
+      routeTree: createRootRoute(),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    })
+    render(
+      <RouterContextProvider router={router}>
+        <RelatedPolicyLink section='health' />
+      </RouterContextProvider>
+    )
+    if (role >= 10) {
+      expect(
+        screen.getByRole('link', { name: 'Request policies' })
+      ).toHaveAttribute('href', '/system-settings/request-policies/health')
+    } else {
+      expect(
+        screen.queryByRole('link', { name: 'Request policies' })
+      ).not.toBeInTheDocument()
+    }
+  }
+)

@@ -35,6 +35,7 @@ interface ModelBadgeProps {
   actualModel?: string
   className?: string
   wrapText?: boolean
+  truncateText?: boolean
   onInspect?: () => void
 }
 
@@ -52,13 +53,16 @@ function ModelBadgeContent(props: ModelBadgeProps) {
         'border-border/60 bg-muted/30 h-6 max-w-none gap-1.5 rounded-md border px-2 [font-family:var(--font-body)]',
         provider?.icon && 'text-foreground',
         props.wrapText && 'h-auto min-h-6 max-w-full py-0.5 whitespace-normal',
+        props.truncateText && 'max-w-full min-w-0',
         props.className
       )}
     >
       <span
         className={cn(
           'flex items-center gap-1.5',
-          props.wrapText ? 'max-w-full min-w-0' : 'max-w-none'
+          props.wrapText || props.truncateText
+            ? 'max-w-full min-w-0'
+            : 'max-w-none'
         )}
       >
         {provider?.icon && (
@@ -71,11 +75,12 @@ function ModelBadgeContent(props: ModelBadgeProps) {
           </span>
         )}
         <span
-          className={
-            props.wrapText
-              ? 'line-clamp-2 [overflow-wrap:anywhere]'
-              : 'whitespace-nowrap'
-          }
+          className={cn(
+            'whitespace-nowrap',
+            props.wrapText &&
+              'line-clamp-2 whitespace-normal [overflow-wrap:anywhere]',
+            props.truncateText && 'truncate whitespace-nowrap'
+          )}
         >
           {props.modelName}
         </span>

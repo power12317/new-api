@@ -58,6 +58,7 @@ func postAddChannel(t *testing.T, userID, role int, body string) *httptest.Respo
 
 func TestAddChannelTaskPluginRequiresBindPermission(t *testing.T) {
 	setupTaskPluginBindChannelTest(t)
+	require.NoError(t, authz.SetUserPermissions(2, authz.PermissionsMap{authz.ResourceTaskPlugin: {authz.ActionBind: false}}))
 	const key = "channel-bind"
 	source := `
 export const meta = {apiVersion: 1, key: "channel-bind", name: "Bind", version: "1.0.0", author: {name: "Test"}, models: ["doc"], fetchMode: "per_task"};
@@ -88,6 +89,7 @@ export function parseTaskResult() { return {}; }
 
 func TestUpdateChannelTaskPluginRequiresBindPermission(t *testing.T) {
 	setupTaskPluginBindChannelTest(t)
+	require.NoError(t, authz.SetUserPermissions(2, authz.PermissionsMap{authz.ResourceTaskPlugin: {authz.ActionBind: false}}))
 	const key = "channel-bind-update"
 	source := `
 export const meta = {apiVersion: 1, key: "channel-bind-update", name: "Bind", version: "1.0.0", author: {name: "Test"}, models: ["doc"], fetchMode: "per_task"};

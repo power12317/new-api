@@ -40,8 +40,8 @@ import { ChannelsTable } from './components/channels-table'
 
 export function Channels() {
   const { t } = useTranslation()
-  const isRoot = useAuthStore(
-    (state) => state.auth.user?.role === ROLE.SUPER_ADMIN
+  const isAdmin = useAuthStore(
+    (state) => (state.auth.user?.role ?? ROLE.GUEST) >= ROLE.ADMIN
   )
   const channelOpsQuery = useQuery({
     queryKey: ['channel-ops'],
@@ -54,7 +54,7 @@ export function Channels() {
     typeof retryTimes === 'number' ? `${t('Max Retries')}: ${retryTimes}` : null
   let retryBadge = null
   if (retryLabel) {
-    retryBadge = isRoot ? (
+    retryBadge = isAdmin ? (
       <Tooltip>
         <TooltipTrigger
           render={

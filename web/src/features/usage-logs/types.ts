@@ -1,4 +1,3 @@
-import type { PolicyEvent } from '@/features/system-settings/request-policies/api'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -21,6 +20,7 @@ For commercial licensing, please contact support@quantumnous.com
  * Type definitions for usage logs
  */
 import type { RequestRuleTrace } from '@/features/pricing/lib/billing-expr'
+import type { PolicyEvent } from '@/features/system-settings/request-policies/api'
 
 import type { UsageLog } from './data/schema'
 // ============================================================================
@@ -115,6 +115,20 @@ export interface ToolSurchargeItem {
 }
 
 export interface LogOtherData {
+  request_model?: string
+  request_reasoning_effort?: string
+  response_model?: string
+  upstream_status_code?: number
+  upstream_request_status?: 'normal' | 'degraded' | 'error' | 'unknown'
+  turn_state_source?: 'request' | 'response' | 'none'
+  turn_state_length?: number
+  turn_state_verdict?:
+    | 'normal'
+    | 'degraded'
+    | 'unrecognized'
+    | 'missing'
+    | 'multiple'
+  turn_state_rule_version?: number
   admin_info?: {
     request_policy?: PolicyEvent[]
     is_multi_key?: boolean

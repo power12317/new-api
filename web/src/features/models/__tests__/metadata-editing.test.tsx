@@ -216,17 +216,24 @@ describe('model pricing entry', () => {
     client.clear()
   })
 
-  it('does not expose a pricing shortcut to an ordinary administrator', () => {
-    vi.spyOn(api, 'get').mockResolvedValue({
-      data: { success: true, data: { items: [] } },
-    })
-    const client = renderModelActions(model, 10)
-    expect(screen.getByRole('button', { name: 'Edit' })).toBeVisible()
-    expect(
-      screen.queryByRole('button', { name: 'Pricing' })
-    ).not.toBeInTheDocument()
-    client.clear()
-  })
+  it.each([1, 10, 100])(
+    'exposes a pricing shortcut only to administrator roles (%s)',
+    (role) => {
+      vi.spyOn(api, 'get').mockResolvedValue({
+        data: { success: true, data: { items: [] } },
+      })
+      const client = renderModelActions(model, role)
+      expect(screen.getByRole('button', { name: 'Edit' })).toBeVisible()
+      if (role >= 10) {
+        expect(screen.getByRole('button', { name: 'Pricing' })).toBeVisible()
+      } else {
+        expect(
+          screen.queryByRole('button', { name: 'Pricing' })
+        ).not.toBeInTheDocument()
+      }
+      client.clear()
+    }
+  )
 
   it('requires a concrete model for matching rules and protects an unsaved price on close', async () => {
     const matchedModel = {

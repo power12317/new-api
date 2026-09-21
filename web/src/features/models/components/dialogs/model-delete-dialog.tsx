@@ -145,7 +145,7 @@ export function ModelDeleteDialog(props: ModelDeleteDialogProps) {
           <p className='text-muted-foreground text-sm'>
             {canEditPricing
               ? t('Built-in pricing may become effective again.')
-              : t('Model pricing is managed by a super administrator.')}
+              : t('Model pricing is managed by an administrator.')}
           </p>
         )}
         {mutation.isError && (

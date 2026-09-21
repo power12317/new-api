@@ -45,11 +45,13 @@ func init() {
 				Action:         ActionSensitiveWrite,
 				LabelKey:       "Edit sensitive channel settings",
 				DescriptionKey: "Create channels or edit keys, base URLs, and overrides.",
+				DefaultRoles:   []string{BuiltInRoleAdmin},
 			},
 			{
 				Action:         ActionSecretView,
 				LabelKey:       "View channel secrets",
-				DescriptionKey: "Reserved for viewing complete channel keys after secure verification.",
+				DescriptionKey: "Verification required to reveal the saved key.",
+				DefaultRoles:   []string{BuiltInRoleAdmin},
 			},
 		},
 	})

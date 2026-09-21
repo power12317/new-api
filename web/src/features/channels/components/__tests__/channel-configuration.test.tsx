@@ -2595,3 +2595,35 @@ test('the header override passthrough template button confirms before filling th
     )
   ).toBeChecked()
 })
+
+test.each([true, false])(
+  'an administrator can reveal saved keys only when secret_view is granted (%s)',
+  async (allowed) => {
+    useAuthStore.getState().auth.setUser({
+      id: 2,
+      username: 'admin',
+      role: ROLE.ADMIN,
+      permissions: {
+        admin_permissions: {
+          channel: {
+            read: true,
+            write: true,
+            sensitive_write: true,
+            secret_view: allowed,
+          },
+        },
+      },
+    })
+    render(<ConfigurationHarness currentRow={editingChannel} />)
+    await screen.findByDisplayValue('Existing channel')
+    if (allowed) {
+      expect(
+        await screen.findByRole('button', { name: 'Reveal key' })
+      ).toBeEnabled()
+    } else {
+      expect(
+        screen.queryByRole('button', { name: 'Reveal key' })
+      ).not.toBeInTheDocument()
+    }
+  }
+)

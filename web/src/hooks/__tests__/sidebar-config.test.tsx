@@ -17,6 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  createRouter,
+  createRootRoute,
+  createMemoryHistory,
+  RouterContextProvider,
+} from '@tanstack/react-router'
 import { cleanup, renderHook } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -30,6 +36,7 @@ import { useAuthStore } from '@/stores/auth-store'
 
 import { useSidebarConfig } from '../use-sidebar-config'
 import { useSidebarData } from '../use-sidebar-data'
+import { useSidebarView } from '../use-sidebar-view'
 
 beforeEach(() => {
   vi.stubGlobal('localStorage', {
@@ -180,3 +187,36 @@ describe('audit log sidebar entry', () => {
     expect(titles).toContain('Audit Logs')
   })
 })
+
+it.each([1, 10, 100])(
+  'management navigation is available according to role %s',
+  (role) => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    client.setQueryData(['status'], {})
+    useAuthStore.getState().auth.setUser({ id: 1, username: 'viewer', role })
+    const router = createRouter({
+      routeTree: createRootRoute(),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    })
+    function Wrapper(props: { children: ReactNode }) {
+      return (
+        <QueryClientProvider client={client}>
+          <RouterContextProvider router={router}>
+            {props.children}
+          </RouterContextProvider>
+        </QueryClientProvider>
+      )
+    }
+    const { result } = renderHook(() => useSidebarView(), { wrapper: Wrapper })
+    const titles = result.current.navGroups
+      .flatMap((group) => group.items)
+      .map((item) => item.title)
+    for (const title of ['System Settings', 'System Info', 'Task Plugins']) {
+      if (role >= 10) expect(titles).toContain(title)
+      else expect(titles).not.toContain(title)
+    }
+    client.clear()
+  }
+)

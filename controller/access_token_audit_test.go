@@ -258,7 +258,7 @@ func TestAuditRoleVisibilityAndPermissions(t *testing.T) {
 	jwt, _, err := service.IssueAccessToken(service.AuthIdentity{UserID: admin.Id, SessionID: session.SID, UserAuthVersion: 1, SessionVersion: 1})
 	require.NoError(t, err)
 	for _, credential := range []string{pat, jwt} {
-		assert.Equal(t, http.StatusForbidden, auditRequest(router, "GET", "/api/audit", credential).Code)
+		assert.Equal(t, http.StatusOK, auditRequest(router, "GET", "/api/audit", credential).Code)
 	}
 	require.NoError(t, model.DB.Transaction(func(tx *gorm.DB) error {
 		return authz.SetUserPermissionsInTx(tx, admin.Id, authz.PermissionsMap{authz.ResourceAudit: {authz.ActionRead: true}})
@@ -737,7 +737,7 @@ func TestAuditDatabaseMatrix(t *testing.T) {
 					verifyAuditRoleStorage(t)
 					verifyAuditJSONStorage(t)
 					require.NoError(t, authz.Init(model.DB))
-					assert.False(t, authz.Can(1, common.RoleAdminUser, authz.AuditRead))
+					assert.True(t, authz.Can(1, common.RoleAdminUser, authz.AuditRead))
 					require.NoError(t, model.DB.Transaction(func(tx *gorm.DB) error {
 						return authz.SetUserPermissionsInTx(tx, 1, authz.PermissionsMap{authz.ResourceAudit: {authz.ActionRead: true}})
 					}))

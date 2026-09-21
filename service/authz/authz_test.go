@@ -45,12 +45,11 @@ func TestInitSeedsBuiltInRolesAndPoliciesOnce(t *testing.T) {
 	assert.Equal(t, BuiltInRoleRoot, roles[0].Key)
 	assert.Equal(t, BuiltInRoleAdmin, roles[1].Key)
 
-	assert.True(t, Can(1, common.RoleRootUser, ChannelSensitiveWrite))
-	assert.True(t, Can(2, common.RoleAdminUser, ChannelRead))
-	assert.True(t, Can(2, common.RoleAdminUser, ChannelOperate))
-	assert.True(t, Can(2, common.RoleAdminUser, ChannelWrite))
-	assert.False(t, Can(2, common.RoleAdminUser, ChannelSensitiveWrite))
-	assert.False(t, Can(3, common.RoleCommonUser, ChannelRead))
+	for _, permission := range []Permission{ChannelRead, ChannelOperate, ChannelWrite, ChannelSensitiveWrite, ChannelSecretView, TaskPluginBind, AuditRead} {
+		assert.True(t, Can(1, common.RoleRootUser, permission))
+		assert.True(t, Can(2, common.RoleAdminUser, permission), "%s.%s", permission.Resource, permission.Action)
+		assert.False(t, Can(3, common.RoleCommonUser, permission))
+	}
 }
 
 func TestInitOnSlaveOnlyLoadsPolicies(t *testing.T) {
@@ -155,14 +154,14 @@ func TestSetUserPermissionsStoresOnlyOverrides(t *testing.T) {
 			ActionSecretView:     false,
 		},
 		ResourceTaskPlugin: {
-			ActionBind: false,
+			ActionBind: true,
 		},
-		ResourceAudit: {ActionRead: false},
+		ResourceAudit: {ActionRead: true},
 	}, ExplicitUserPermissions(42))
 	assert.Equal(t, PermissionsMap{
 		ResourceChannel: {
-			ActionSensitiveWrite: true,
-			ActionWrite:          false,
+			ActionSecretView: false,
+			ActionWrite:      false,
 		},
 	}, ExplicitUserOverrides(42))
 
@@ -174,22 +173,22 @@ func TestSetUserPermissionsStoresOnlyOverrides(t *testing.T) {
 		ActionRead:           true,
 		ActionOperate:        true,
 		ActionWrite:          true,
-		ActionSensitiveWrite: false,
-		ActionSecretView:     false,
+		ActionSensitiveWrite: true,
+		ActionSecretView:     true,
 	}}))
-	assert.False(t, Can(42, common.RoleAdminUser, ChannelSensitiveWrite))
+	assert.True(t, Can(42, common.RoleAdminUser, ChannelSensitiveWrite))
 	assert.Equal(t, PermissionsMap{
 		ResourceChannel: {
 			ActionRead:           true,
 			ActionOperate:        true,
 			ActionWrite:          true,
-			ActionSensitiveWrite: false,
-			ActionSecretView:     false,
+			ActionSensitiveWrite: true,
+			ActionSecretView:     true,
 		},
 		ResourceTaskPlugin: {
-			ActionBind: false,
+			ActionBind: true,
 		},
-		ResourceAudit: {ActionRead: false},
+		ResourceAudit: {ActionRead: true},
 	}, ExplicitUserPermissions(42))
 	assert.Empty(t, ExplicitUserOverrides(42))
 }
@@ -200,10 +199,10 @@ func TestClearUserAuthorizationRemovesOverrides(t *testing.T) {
 
 	require.NoError(t, SetUserPermissions(90, PermissionsMap{ResourceChannel: {
 		ActionWrite:          false,
-		ActionSensitiveWrite: true,
+		ActionSensitiveWrite: false,
 	}}))
 
-	assert.True(t, Can(90, common.RoleAdminUser, ChannelSensitiveWrite))
+	assert.False(t, Can(90, common.RoleAdminUser, ChannelSensitiveWrite))
 	assert.False(t, Can(90, common.RoleAdminUser, ChannelWrite))
 
 	require.NoError(t, ClearUserAuthorization(90))
@@ -211,7 +210,7 @@ func TestClearUserAuthorizationRemovesOverrides(t *testing.T) {
 	assert.Empty(t, ExplicitUserOverrides(90))
 	assert.True(t, Can(90, common.RoleAdminUser, ChannelRead))
 	assert.True(t, Can(90, common.RoleAdminUser, ChannelWrite))
-	assert.False(t, Can(90, common.RoleAdminUser, ChannelSensitiveWrite))
+	assert.True(t, Can(90, common.RoleAdminUser, ChannelSensitiveWrite))
 	assert.False(t, Can(90, common.RoleCommonUser, ChannelRead))
 }
 
@@ -224,14 +223,14 @@ func TestSetUserPermissionsInTxDoesNotMutateEnforcerBeforeReload(t *testing.T) {
 			ActionRead:           true,
 			ActionOperate:        true,
 			ActionWrite:          true,
-			ActionSensitiveWrite: true,
+			ActionSensitiveWrite: false,
 			ActionSecretView:     false,
 		}})
 	}))
 
-	assert.False(t, Can(42, common.RoleAdminUser, ChannelSensitiveWrite))
-	require.NoError(t, ReloadPolicy())
 	assert.True(t, Can(42, common.RoleAdminUser, ChannelSensitiveWrite))
+	require.NoError(t, ReloadPolicy())
+	assert.False(t, Can(42, common.RoleAdminUser, ChannelSensitiveWrite))
 }
 
 func TestSetUserPermissionsInTxRollbackLeavesNoPolicy(t *testing.T) {
@@ -241,12 +240,12 @@ func TestSetUserPermissionsInTxRollbackLeavesNoPolicy(t *testing.T) {
 	tx := db.Begin()
 	require.NoError(t, tx.Error)
 	require.NoError(t, SetUserPermissionsInTx(tx, 43, PermissionsMap{ResourceChannel: {
-		ActionSensitiveWrite: true,
+		ActionSensitiveWrite: false,
 	}}))
 	require.NoError(t, tx.Rollback().Error)
 	require.NoError(t, ReloadPolicy())
 
-	assert.False(t, Can(43, common.RoleAdminUser, ChannelSensitiveWrite))
+	assert.True(t, Can(43, common.RoleAdminUser, ChannelSensitiveWrite))
 	var count int64
 	require.NoError(t, db.Model(&model.CasbinRule{}).Where("v0 = ?", UserSubject(43)).Count(&count).Error)
 	assert.Equal(t, int64(0), count)
@@ -281,42 +280,22 @@ func TestCapabilitiesUseCatalogShape(t *testing.T) {
 	assert.True(t, capabilities[ResourceChannel][ActionRead])
 	assert.True(t, capabilities[ResourceChannel][ActionOperate])
 	assert.True(t, capabilities[ResourceChannel][ActionWrite])
-	assert.False(t, capabilities[ResourceChannel][ActionSensitiveWrite])
-	assert.False(t, capabilities[ResourceChannel][ActionSecretView])
-	assert.False(t, capabilities[ResourceTaskPlugin][ActionBind])
+	assert.True(t, capabilities[ResourceChannel][ActionSensitiveWrite])
+	assert.True(t, capabilities[ResourceChannel][ActionSecretView])
+	assert.True(t, capabilities[ResourceTaskPlugin][ActionBind])
 }
 
-func TestTaskPluginBindIsRootOnlyUntilGranted(t *testing.T) {
+func TestAdministratorDefaultsPreserveExplicitRevocationsOnRestart(t *testing.T) {
 	db := newAuthzTestDB(t)
 	require.NoError(t, Init(db))
-
-	var bindAction *ActionDefinition
-	for _, resource := range Catalog() {
-		if resource.Resource != ResourceTaskPlugin {
-			continue
-		}
-		assert.Equal(t, "Task Plugin", resource.LabelKey)
-		for i := range resource.Actions {
-			if resource.Actions[i].Action == ActionBind {
-				bindAction = &resource.Actions[i]
-			}
+	for _, permission := range []Permission{ChannelSensitiveWrite, ChannelSecretView, TaskPluginBind, AuditRead} {
+		require.NoError(t, SetUserPermissions(42, PermissionsMap{permission.Resource: {permission.Action: false}}))
+		assert.False(t, Can(42, common.RoleAdminUser, permission))
+		for range 2 {
+			require.NoError(t, Init(db))
+			assert.False(t, Can(42, common.RoleAdminUser, permission))
+			assert.True(t, Can(43, common.RoleAdminUser, permission))
+			assert.True(t, Can(42, common.RoleRootUser, permission))
 		}
 	}
-	require.NotNil(t, bindAction)
-	assert.Equal(t, "Bind task plugins", bindAction.LabelKey)
-	assert.Equal(t, "List registered task plugins and bind them when creating or editing task plugin channels.", bindAction.DescriptionKey)
-	assert.Empty(t, bindAction.DefaultRoles)
-
-	assert.False(t, Can(2, common.RoleAdminUser, TaskPluginBind))
-	assert.True(t, Can(1, common.RoleRootUser, TaskPluginBind))
-
-	enforcer := currentEnforcer()
-	require.NotNil(t, enforcer)
-	_, err := enforcer.AddPolicy(RoleSubject(BuiltInRoleAdmin), ResourceTaskPlugin, ActionBind, EffectAllow)
-	require.NoError(t, err)
-	assert.True(t, Can(2, common.RoleAdminUser, TaskPluginBind))
-
-	_, err = enforcer.RemovePolicy(RoleSubject(BuiltInRoleAdmin), ResourceTaskPlugin, ActionBind, EffectAllow)
-	require.NoError(t, err)
-	assert.False(t, Can(2, common.RoleAdminUser, TaskPluginBind))
 }

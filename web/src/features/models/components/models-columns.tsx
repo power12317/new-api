@@ -151,9 +151,7 @@ export function useModelsColumns(
       cell: ({ row }) => {
         if (!canPrice) {
           return (
-            <span className='text-muted-foreground text-xs'>
-              {t('Super admin')}
-            </span>
+            <span className='text-muted-foreground text-xs'>{t('Admin')}</span>
           )
         }
         if (row.original.name_rule !== 0) {

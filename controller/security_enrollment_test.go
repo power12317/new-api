@@ -28,6 +28,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/oauth"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/gin-gonic/gin"
@@ -798,10 +799,23 @@ func TestSecurityEnrollmentPendingPasskeyRejectsChangedAuthorization(t *testing.
 }
 
 func TestSecurityEnrollmentPasskeyProofProtectsChannelKeyRead(t *testing.T) {
+	for _, role := range []int{common.RoleAdminUser, common.RoleRootUser} {
+		t.Run(fmt.Sprint(role), func(t *testing.T) {
+			testPasskeyChannelKeyRead(t, role)
+		})
+	}
+}
+
+func testPasskeyChannelKeyRead(t *testing.T, role int) {
+	t.Helper()
 	user, identity := setupSecurityEnrollmentTest(t)
-	require.NoError(t, model.DB.Model(user).Update("role", common.RoleRootUser).Error)
+	require.NoError(t, model.DB.Model(user).Update("role", role).Error)
 	require.NoError(t, model.PublishUserAuthCache(user.Id))
-	require.NoError(t, model.DB.AutoMigrate(&model.Channel{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.Channel{}, &model.CasbinRule{}, &model.AuthzRole{}))
+	wasMaster := common.IsMasterNode
+	common.IsMasterNode = true
+	t.Cleanup(func() { common.IsMasterNode = wasMaster })
+	require.NoError(t, authz.Init(model.DB))
 	for _, channel := range []model.Channel{
 		{Id: 123, Name: "first", Key: "first-channel-secret", Type: 1, Status: 1},
 		{Id: 456, Name: "second", Key: "second-channel-secret", Type: 1, Status: 1},
@@ -863,7 +877,7 @@ func TestSecurityEnrollmentPasskeyProofProtectsChannelKeyRead(t *testing.T) {
 	assert.Equal(t, "channel.key.read", proof.Scope, "finish cannot replace the operation approved at begin")
 
 	router := gin.New()
-	router.POST("/api/channel/:id/key", middleware.RootAuth(), middleware.SecureVerificationRequired(), GetChannelKey)
+	router.POST("/api/channel/:id/key", middleware.AdminAuth(), middleware.RequirePermission(authz.ChannelSecretView), middleware.SecureVerificationRequired(), GetChannelKey)
 	for _, test := range []struct {
 		name, path, proof, code, key string
 		status                       int

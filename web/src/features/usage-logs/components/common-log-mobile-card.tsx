@@ -38,7 +38,7 @@ import {
   isDisplayableLogType,
   isTimingLogType,
 } from '../lib/utils'
-import { ModelBadge } from './model-badge'
+import { LogModelDisplay } from './log-model-display'
 import { StreamTpsCell, TimingMetricsCell } from './timing-metrics-cell'
 import { useUsageLogsContext } from './usage-logs-provider'
 
@@ -127,6 +127,7 @@ export function CommonLogMobileCard<TData>(props: {
   const costCell = props.cells.get('quota')
   const contentCell = props.cells.get('content')
   const channelCell = props.cells.get('channel')
+  const statusCell = props.cells.get('upstream_status')
   const cacheRead = other?.cache_tokens || 0
   const cacheWrite =
     (other?.cache_creation_tokens_5m || 0) +
@@ -146,9 +147,9 @@ export function CommonLogMobileCard<TData>(props: {
       <div className='flex min-w-0 flex-wrap items-start gap-x-3 gap-y-2'>
         {fields.model.visible && (
           <div className='min-w-0 flex-[1_1_10rem]'>
-            <ModelBadge
+            <LogModelDisplay
               modelName={model.name}
-              actualModel={model.actualModel}
+              other={other}
               wrapText
               onInspect={() => setSelectedField('model')}
             />
@@ -160,6 +161,15 @@ export function CommonLogMobileCard<TData>(props: {
           </div>
         )}
       </div>
+      {statusCell && [2, 5].includes(log.type) && !other?.is_task && (
+        <div className='flex items-center gap-2 text-xs'>
+          <span className='text-muted-foreground'>{t('Status')}</span>
+          {flexRender(
+            statusCell.column.columnDef.cell,
+            statusCell.getContext()
+          )}
+        </div>
+      )}
       <div
         className='grid min-w-0 grid-cols-2 items-stretch gap-x-3'
         data-slot='log-time-and-timing'
@@ -349,6 +359,15 @@ export function CommonLogMobileCard<TData>(props: {
             <p className='bg-muted rounded-lg p-4 text-base [overflow-wrap:anywhere] whitespace-pre-wrap'>
               {activeField.value}
             </p>
+            {selectedField === 'model' && other?.response_model && (
+              <div className='space-y-2'>
+                <p className='text-muted-foreground'>{t('Response Model')}</p>
+                <p className='text-base [overflow-wrap:anywhere]'>
+                  {other.response_model}
+                </p>
+                <CopyButton value={other.response_model} />
+              </div>
+            )}
             {selectedField === 'model' && model.actualModel && (
               <div className='space-y-2'>
                 <p className='text-muted-foreground'>{t('Actual Model')}</p>

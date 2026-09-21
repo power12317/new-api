@@ -55,7 +55,6 @@ import { cn } from '@/lib/utils'
 import { LOG_TYPE_ALL_VALUE } from '../../constants'
 import type { UsageLog } from '../../data/schema'
 import {
-  formatModelName,
   decodeBillingExprB64,
   getTieredBillingSummary,
   hasAnyCacheTokens,
@@ -72,7 +71,8 @@ import {
 import type { LogOtherData } from '../../types'
 import { DetailsDialog } from '../dialogs/details-dialog'
 import { LogCostDisplay } from '../log-cost-display'
-import { ModelBadge } from '../model-badge'
+import { LogModelDisplay } from '../log-model-display'
+import { LogUpstreamStatus } from '../log-upstream-status'
 import { TimingMetricsCell, StreamTpsCell } from '../timing-metrics-cell'
 import { useUsageLogsContext } from '../usage-logs-provider'
 
@@ -663,18 +663,30 @@ export function useCommonLogsColumns(
         const log = row.original
         if (!isDisplayableLogType(log.type)) return null
 
-        const modelInfo = formatModelName(log)
-
+        const other = parseLogOther(log.other)
         return (
-          <div className='flex w-fit flex-col gap-0.5'>
-            <ModelBadge
-              modelName={modelInfo.name}
-              actualModel={modelInfo.actualModel}
-            />
-          </div>
+          <LogModelDisplay
+            modelName={other?.request_model || log.model_name}
+            other={other}
+          />
         )
       },
       meta: { mobileTitle: true },
+    },
+    {
+      id: 'upstream_status',
+      accessorFn: (log) => parseLogOther(log.other)?.upstream_request_status,
+      header: t('Status'),
+      cell: ({ row }) => {
+        const log = row.original
+        const other = parseLogOther(log.other)
+        if (![2, 5].includes(log.type) || other?.is_task) {
+          return <span className='text-muted-foreground'>—</span>
+        }
+        return <LogUpstreamStatus other={other} />
+      },
+      size: 100,
+      meta: { label: t('Status') },
     },
     {
       accessorKey: 'is_stream',

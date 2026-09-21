@@ -17,7 +17,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestGetTaskPluginOptionsAdminForbiddenRootAllowed(t *testing.T) {
+func TestGetTaskPluginOptionsRequiresAdministrator(t *testing.T) {
 	wasMaster := common.IsMasterNode
 	common.IsMasterNode = true
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -36,7 +36,8 @@ func TestGetTaskPluginOptionsAdminForbiddenRootAllowed(t *testing.T) {
 		role       int
 		wantStatus int
 	}{
-		{name: "admin", id: 2, role: common.RoleAdminUser, wantStatus: http.StatusForbidden},
+		{name: "user", id: 3, role: common.RoleCommonUser, wantStatus: http.StatusForbidden},
+		{name: "admin", id: 2, role: common.RoleAdminUser, wantStatus: http.StatusOK},
 		{name: "root", id: 1, role: common.RoleRootUser, wantStatus: http.StatusOK},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

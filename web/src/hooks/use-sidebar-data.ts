@@ -161,13 +161,13 @@ export function useSidebarData(): SidebarData {
             title: t('System Info'),
             url: '/system-info',
             icon: ServerCog,
-            requiredRole: ROLE.SUPER_ADMIN,
+            requiredRole: ROLE.ADMIN,
           },
           {
             title: t('Task Plugins'),
             url: '/task-plugins',
             icon: PlugZap,
-            requiredRole: ROLE.SUPER_ADMIN,
+            requiredRole: ROLE.ADMIN,
           },
           {
             title: t('System Settings'),

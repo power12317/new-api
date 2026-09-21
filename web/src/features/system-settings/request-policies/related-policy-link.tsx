@@ -11,10 +11,10 @@ import { policyLabel } from './policy-label'
 
 export function RelatedPolicyLink(props: { section: 'routing' | 'health' }) {
   const { t } = useTranslation()
-  const isRoot = useAuthStore(
-    (state) => state.auth.user?.role === ROLE.SUPER_ADMIN
+  const isAdmin = useAuthStore(
+    (state) => (state.auth.user?.role ?? ROLE.GUEST) >= ROLE.ADMIN
   )
-  if (!isRoot) return null
+  if (!isAdmin) return null
   return (
     <Link
       className='text-primary ml-1 underline underline-offset-4'
