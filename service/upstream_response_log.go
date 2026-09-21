@@ -11,6 +11,8 @@ func AppendUpstreamResponseLogInfo(info *relaycommon.RelayInfo, other *model.Log
 	if info == nil || other == nil {
 		return
 	}
+	other.SetPublic("request_model", info.OriginModelName)
+	other.SetPublic("request_reasoning_effort", info.RequestReasoningEffort)
 	response := info.UpstreamResponse
 	if response == nil {
 		return

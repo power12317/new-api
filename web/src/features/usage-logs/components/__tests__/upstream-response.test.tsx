@@ -168,7 +168,7 @@ test.each([undefined, 0, 292, 332, 17])(
   }
 )
 
-test('shows official model mismatch evidence alongside the degraded status', () => {
+test('shows the response model on its own line alongside the degraded status', () => {
   renderLog({
     response_model: {
       requested_model: 'requested-model',
@@ -180,7 +180,10 @@ test('shows official model mismatch evidence alongside the degraded status', () 
     turn_state_length: 312,
     turn_state_source: 'response',
   })
-  expect(screen.getByText('Response model: different-model')).toBeVisible()
+  expect(screen.getByText('different-model')).toBeVisible()
+  expect(
+    screen.getByRole('group', { name: 'Response Model' })
+  ).toContainElement(screen.getByText('different-model'))
   expect(
     within(screen.getByRole('cell', { name: 'upstream_status' })).getByText(
       'Degraded'
@@ -250,4 +253,90 @@ test('status labels react to language changes', async () => {
     </I18nextProvider>
   )
   expect(screen.getByText('降智')).toBeVisible()
+})
+
+test.each([false, true])(
+  'shows request effort and the response model without opening details (mobile: %s)',
+  (mobile) => {
+    renderLog(
+      {
+        request_reasoning_effort: 'high',
+        reasoning_effort: 'low',
+        response_model: {
+          requested_model: 'client-model',
+          upstream_model: 'mapped-model',
+          returned_model: 'client-model',
+        },
+      },
+      { mobile }
+    )
+    expect(screen.getByText('high')).toBeVisible()
+    expect(screen.queryByText('low')).not.toBeInTheDocument()
+    const response = screen.getByRole('group', { name: 'Response Model' })
+    expect(within(response).getByText('client-model')).toBeVisible()
+    expect(screen.getAllByText('client-model')).toHaveLength(2)
+    expect(screen.queryByText('Model mismatch')).not.toBeInTheDocument()
+  }
+)
+
+test.each(['requested-model-mini', 'Requested-Model', 'mapped-model'])(
+  'highlights %s when it differs from the requested model even if upstream considers it compatible',
+  (returned) => {
+    renderLog({
+      response_model: {
+        requested_model: 'requested-model',
+        upstream_model: 'mapped-model',
+        returned_model: returned,
+      },
+    })
+    expect(screen.getByText('Model mismatch')).toBeVisible()
+    expect(
+      within(screen.getByRole('group', { name: 'Response Model' })).getByText(
+        returned
+      )
+    ).toBeVisible()
+  }
+)
+
+test('keeps legacy string response models and their request effort visible', () => {
+  renderLog({
+    request_model: 'legacy-client-model',
+    request_reasoning_effort: 'xhigh',
+    response_model: 'legacy-response-model',
+  })
+  expect(screen.getByText('legacy-client-model')).toBeVisible()
+  expect(screen.getByText('xhigh')).toBeVisible()
+  expect(screen.getByText('legacy-response-model')).toBeVisible()
+})
+
+test.each([
+  { other: { response_model: '' }, expected: 'Not returned' },
+  { other: {}, expected: 'Not recorded' },
+])('preserves missing response semantics: $expected', ({ other, expected }) => {
+  renderLog(other)
+  expect(
+    within(screen.getByRole('group', { name: 'Response Model' })).getByText(
+      expected
+    )
+  ).toBeVisible()
+})
+
+test('does not replace an explicitly absent requested effort with the overridden effort', () => {
+  renderLog({ request_reasoning_effort: '', reasoning_effort: 'high' })
+  expect(screen.queryByText('high')).not.toBeInTheDocument()
+})
+
+test('legacy mapped log details show the original request model once and keep recorded effort', () => {
+  renderLog(
+    {
+      request_model: 'client-alias',
+      is_model_mapped: true,
+      upstream_model_name: 'mapped-model',
+      reasoning_effort: 'high',
+    },
+    { details: true }
+  )
+  expect(screen.getAllByText('Request Model')).toHaveLength(1)
+  expect(screen.getByText('client-alias')).toBeVisible()
+  expect(screen.getByText('Request Reasoning Effort')).toBeVisible()
 })

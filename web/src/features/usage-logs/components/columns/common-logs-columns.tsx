@@ -73,8 +73,8 @@ import {
 import type { LogOtherData } from '../../types'
 import { DetailsDialog } from '../dialogs/details-dialog'
 import { LogCostDisplay } from '../log-cost-display'
+import { LogModelDisplay } from '../log-model-display'
 import { LogUpstreamStatus } from '../log-upstream-status'
-import { ModelBadge } from '../model-badge'
 import { TimingMetricsCell, StreamTpsCell } from '../timing-metrics-cell'
 import { useUsageLogsContext } from '../usage-logs-provider'
 
@@ -679,9 +679,9 @@ export function useCommonLogsColumns(
 
           return (
             <div className='flex w-fit flex-col gap-0.5'>
-              <ModelBadge
+              <LogModelDisplay
                 modelName={modelInfo.name}
-                actualModel={modelInfo.actualModel}
+                reasoningEffort={modelInfo.reasoningEffort}
                 responseModel={modelInfo.responseModel}
               />
             </div>

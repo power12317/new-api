@@ -81,21 +81,20 @@ func TestResponseModelComparisonAndLog(t *testing.T) {
 	}
 }
 
-func TestResponseModelLogOmitsUnchangedModel(t *testing.T) {
+func TestResponseModelLogIncludesUnchangedModel(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		upstream string
 		returned string
 		mapped   bool
-		record   bool
 	}{
 		{name: "same model", upstream: "requested", returned: "requested"},
 		{name: "no upstream name", returned: "requested"},
-		{name: "mapped model", upstream: "mapped", returned: "mapped", mapped: true, record: true},
-		{name: "mapped response echoes request", upstream: "mapped", returned: "requested", mapped: true, record: true},
-		{name: "prefix difference", upstream: "requested", returned: "requested-2026-09-01", record: true},
-		{name: "case difference", upstream: "requested", returned: "REQUESTED", record: true},
-		{name: "mismatch", upstream: "requested", returned: "other", record: true},
+		{name: "mapped model", upstream: "mapped", returned: "mapped", mapped: true},
+		{name: "mapped response echoes request", upstream: "mapped", returned: "requested", mapped: true},
+		{name: "prefix difference", upstream: "requested", returned: "requested-2026-09-01"},
+		{name: "case difference", upstream: "requested", returned: "REQUESTED"},
+		{name: "mismatch", upstream: "requested", returned: "other"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -107,11 +106,7 @@ func TestResponseModelLogOmitsUnchangedModel(t *testing.T) {
 			other := service.GenerateTextOtherInfo(c, info, 1, 1, 1, 0, 0, 0, 1)
 			require.NotNil(t, info.ResponseModel)
 			assert.Equal(t, float64(1), other.Snapshot()["model_ratio"])
-			if tc.record {
-				assert.Equal(t, *info.ResponseModel, other.Snapshot()["response_model"])
-			} else {
-				assert.NotContains(t, other.Snapshot(), "response_model")
-			}
+			assert.Equal(t, *info.ResponseModel, other.Snapshot()["response_model"])
 		})
 	}
 }
@@ -262,4 +257,26 @@ func TestResponseModelDoesNotRecordSynthesizedModel(t *testing.T) {
 	})
 	require.Nil(t, apiErr)
 	assert.Nil(t, info.ResponseModel)
+}
+
+func TestResponseModelLogKeepsOriginalEffortAcrossOverridesAndRetries(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Set(string(constant.ContextKeyOriginalModel), "requested")
+	request := &dto.GeneralOpenAIRequest{Model: "requested", ReasoningEffort: "high"}
+	info := relaycommon.GenRelayInfoOpenAI(c, request)
+	info.InitChannelMeta(c)
+	info.SetReasoningEffort("low")
+	info.ObserveResponseModel("requested")
+	other := service.GenerateTextOtherInfo(c, info, 1, 1, 1, 0, 0, 0, 1)
+	assert.Equal(t, "high", other.Snapshot()["request_reasoning_effort"])
+	assert.Equal(t, "low", other.Snapshot()["reasoning_effort"])
+	assert.Equal(t, "requested", other.Snapshot()["request_model"])
+	require.Contains(t, other.Snapshot(), "response_model")
+	request.ReasoningEffort = "max"
+	info.InitChannelMeta(c)
+	info.RecordUpstreamResponse(&http.Response{StatusCode: http.StatusOK}, nil)
+	other = service.GenerateTextOtherInfo(c, info, 1, 1, 1, 0, 0, 0, 1)
+	assert.Equal(t, "high", other.Snapshot()["request_reasoning_effort"])
+	assert.Equal(t, relaycommon.ResponseModel{RequestedModel: "requested", UpstreamModel: "requested"}, other.Snapshot()["response_model"])
 }

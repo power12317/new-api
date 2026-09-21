@@ -115,6 +115,8 @@ export interface ToolSurchargeItem {
 }
 
 export interface LogOtherData {
+  request_model?: string
+  request_reasoning_effort?: string
   upstream_status_code?: number
   upstream_request_status?: 'normal' | 'degraded' | 'error' | 'unknown'
   turn_state_source?: 'request' | 'response' | 'none'

@@ -115,13 +115,11 @@ it('shows model mismatch evidence when tapping the mobile model badge', async ()
   })
   await user.click(
     screen.getByRole('button', {
-      name: `Model: ${longName}, Response model: unexpected-model`,
+      name: `Model: ${longName}`,
     })
   )
   const dialog = await screen.findByRole('dialog', { name: 'Model' })
-  expect(
-    within(dialog).getByText('Response model: unexpected-model')
-  ).toBeVisible()
+  expect(within(dialog).getByText('Model mismatch')).toBeVisible()
   expect(within(dialog).getByText('mapped-model')).toBeVisible()
   expect(within(dialog).getByText('unexpected-model')).toBeVisible()
 })
@@ -151,7 +149,7 @@ it('opens long channel text on tap and copies the complete value', async () => {
 })
 
 it.each([false, true])(
-  'copies the full mobile model name with the keyboard without opening details when there is no mapping or difference (response observed: %s)',
+  'opens the full mobile model name with the keyboard and supports copying it (response observed: %s)',
   async (observed) => {
     const user = userEvent.setup()
     const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()
@@ -173,15 +171,17 @@ it.each([false, true])(
     })
     const button = screen.getByRole('button', { name: `Model: ${longName}` })
     expect(within(button).getByText(longName)).toHaveClass(
-      'line-clamp-2',
-      '[overflow-wrap:anywhere]'
+      'truncate',
+      'whitespace-nowrap'
     )
     button.focus()
     await user.keyboard('{Enter}')
+    const dialog = await screen.findByRole('dialog', { name: 'Model' })
+    expect(dialog).toHaveTextContent(longName)
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Copy to clipboard' })
+    )
     expect(copy).toHaveBeenCalledWith(longName)
-    expect(
-      screen.queryByRole('dialog', { name: 'Model' })
-    ).not.toBeInTheDocument()
   }
 )
 

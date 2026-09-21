@@ -41,6 +41,8 @@ interface ModelBadgeProps {
   responseModel?: LogOtherData['response_model']
   className?: string
   wrapText?: boolean
+  truncateText?: boolean
+  copyable?: boolean
   onInspect?: () => void
 }
 
@@ -58,13 +60,16 @@ function ModelBadgeContent(props: ModelBadgeProps & { copyable: boolean }) {
         'border-border/60 bg-muted/30 h-6 max-w-none gap-1.5 rounded-md border px-2 [font-family:var(--font-body)]',
         provider?.icon && 'text-foreground',
         props.wrapText && 'h-auto min-h-6 max-w-full py-0.5 whitespace-normal',
+        props.truncateText && 'max-w-full min-w-0',
         props.className
       )}
     >
       <span
         className={cn(
           'flex items-center gap-1.5',
-          props.wrapText ? 'max-w-full min-w-0' : 'max-w-none'
+          props.wrapText || props.truncateText
+            ? 'max-w-full min-w-0'
+            : 'max-w-none'
         )}
       >
         {provider?.icon && (
@@ -77,11 +82,12 @@ function ModelBadgeContent(props: ModelBadgeProps & { copyable: boolean }) {
           </span>
         )}
         <span
-          className={
-            props.wrapText
-              ? 'line-clamp-2 [overflow-wrap:anywhere]'
-              : 'whitespace-nowrap'
-          }
+          className={cn(
+            'whitespace-nowrap',
+            props.wrapText &&
+              'line-clamp-2 whitespace-normal [overflow-wrap:anywhere]',
+            props.truncateText && 'truncate whitespace-nowrap'
+          )}
         >
           {props.modelName}
         </span>
@@ -97,6 +103,7 @@ export function ModelBadge(props: ModelBadgeProps) {
     mismatch && props.responseModel
       ? t('Response model: {{model}}', {
           model: props.responseModel.returned_model,
+          interpolation: { escapeValue: false },
         })
       : ''
   const modelLabel = `${t('Model')}: ${props.modelName}${responseModelLabel ? `, ${responseModelLabel}` : ''}`
@@ -126,7 +133,7 @@ export function ModelBadge(props: ModelBadgeProps) {
         </CopyButton>
       )
     }
-    return <ModelBadgeContent {...props} copyable />
+    return <ModelBadgeContent {...props} copyable={props.copyable ?? true} />
   }
 
   const content = (
@@ -206,6 +213,7 @@ export function ModelBadge(props: ModelBadgeProps) {
 
 export function ResponseModelDetails(props: {
   observation: NonNullable<LogOtherData['response_model']>
+  reasoningEffort?: string
 }) {
   const { t } = useTranslation()
   const mismatch = isResponseModelMismatch(props.observation)
@@ -215,9 +223,7 @@ export function ResponseModelDetails(props: {
       {mismatch && (
         <StatusBadge
           icon={AlertTriangle}
-          label={t('Response model: {{model}}', {
-            model: props.observation.returned_model,
-          })}
+          label={t('Model mismatch')}
           variant='warning'
           copyable={false}
           className='h-auto whitespace-normal'
@@ -228,6 +234,12 @@ export function ResponseModelDetails(props: {
         value={props.observation.requested_model}
         mono
       />
+      {props.reasoningEffort && (
+        <DetailRow
+          label={t('Request Reasoning Effort')}
+          value={props.reasoningEffort}
+        />
+      )}
       <DetailRow
         label={t('Upstream Model')}
         value={
@@ -237,16 +249,9 @@ export function ResponseModelDetails(props: {
       />
       <DetailRow
         label={t('Response Model')}
-        value={props.observation.returned_model}
+        value={props.observation.returned_model || t('Not returned')}
         mono
       />
-      {mismatch && (
-        <p className='text-muted-foreground text-xs'>
-          {t(
-            'The upstream returned a model name different from both the requested and upstream models. Aliases or dated versions may also cause this; this warning alone does not prove model substitution.'
-          )}
-        </p>
-      )}
     </div>
   )
 }

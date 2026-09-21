@@ -166,20 +166,14 @@ export function parseLogOther(other: string): LogOtherData | null {
     // into the upstream observation contract without changing saved records.
     if (parsed && typeof parsed.response_model === 'string') {
       const returned = parsed.response_model
-      if (returned) {
-        parsed.response_model = {
-          requested_model:
-            typeof parsed.request_model === 'string'
-              ? parsed.request_model
-              : '',
-          upstream_model:
-            typeof parsed.upstream_model_name === 'string'
-              ? parsed.upstream_model_name
-              : '',
-          returned_model: returned,
-        }
-      } else {
-        delete parsed.response_model
+      parsed.response_model = {
+        requested_model:
+          typeof parsed.request_model === 'string' ? parsed.request_model : '',
+        upstream_model:
+          typeof parsed.upstream_model_name === 'string'
+            ? parsed.upstream_model_name
+            : '',
+        returned_model: returned,
       }
     }
     return parsed as LogOtherData | null
@@ -260,9 +254,14 @@ export function formatModelName(log: UsageLog): {
   name: string
   isMapped: boolean
   actualModel?: string
+  reasoningEffort?: string
   responseModel?: LogOtherData['response_model']
 } {
   const other = parseLogOther(log.other)
+  const name =
+    other?.request_model ||
+    other?.response_model?.requested_model ||
+    log.model_name
   const isMapped = !!(
     other?.is_model_mapped &&
     other?.upstream_model_name &&
@@ -270,10 +269,13 @@ export function formatModelName(log: UsageLog): {
   )
 
   return {
-    name: log.model_name,
+    name,
     isMapped,
     actualModel: isMapped ? other.upstream_model_name : undefined,
-    responseModel: other?.response_model,
+    reasoningEffort: other?.request_reasoning_effort ?? other?.reasoning_effort,
+    responseModel: other?.response_model
+      ? { ...other.response_model, requested_model: name }
+      : undefined,
   }
 }
 

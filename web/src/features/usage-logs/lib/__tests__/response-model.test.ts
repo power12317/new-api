@@ -1,5 +1,3 @@
-import { describe, expect, test } from 'vitest'
-
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -18,6 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { describe, expect, test } from 'vitest'
+
 import { parseLogOther } from '../format'
 import {
   isResponseModelMismatch,
@@ -37,20 +37,17 @@ function observation(
 }
 
 describe('isResponseModelMismatch', () => {
-  test.each([
-    ['requested', 'exact requested model'],
-    ['mapped', 'exact upstream model'],
-    ['Requested', 'case-only difference'],
-    ['requested-2026-09-01', 'dated variant of the requested model'],
-    ['mapped-2026-09-01', 'dated variant of the upstream model'],
-    ['deepseek/requested', 'provider path in front of the requested model'],
-    ['vendor/MAPPED', 'provider path with a case-only difference'],
-    ['accounts/vendor/models/requested', 'nested provider path'],
-  ])('treats %s as compatible (%s)', (returned) => {
-    expect(isResponseModelMismatch(observation(returned))).toBe(false)
+  test('does not highlight an exact match with the requested model', () => {
+    expect(isResponseModelMismatch(observation('requested'))).toBe(false)
   })
 
   test.each([
+    ['mapped', 'mapped upstream name'],
+    ['Requested', 'case-only difference'],
+    ['requested-2026-09-01', 'dated request variant'],
+    ['mapped-2026-09-01', 'dated upstream variant'],
+    ['deepseek/requested', 'provider-qualified name'],
+    ['vendor/MAPPED', 'provider-qualified case difference'],
     ['other', 'different model'],
     ['request', 'shorter name that the expected model extends'],
     ['vendor/other', 'different model behind a provider path'],
@@ -68,7 +65,7 @@ describe('isResponseModelMismatch', () => {
           requested_model: 'vendor/requested',
         })
       )
-    ).toBe(false)
+    ).toBe(true)
     expect(
       isResponseModelMismatch(
         observation('vendor/other', { requested_model: 'vendor/requested' })
@@ -90,7 +87,7 @@ describe('isResponseModelMismatch', () => {
   })
 })
 
-test('normalizes historical string response models before applying the official comparison', () => {
+test('normalizes historical string response models before comparing against the requested name', () => {
   const other = parseLogOther(
     JSON.stringify({
       request_model: 'alias',
@@ -103,6 +100,10 @@ test('normalizes historical string response models before applying the official 
     upstream_model: 'gpt-5',
     returned_model: 'gpt-5-2026',
   })
-  expect(isResponseModelMismatch(other?.response_model)).toBe(false)
-  expect(parseLogOther('{"response_model":""}')?.response_model).toBeUndefined()
+  expect(isResponseModelMismatch(other?.response_model)).toBe(true)
+  expect(parseLogOther('{"response_model":""}')?.response_model).toEqual({
+    requested_model: '',
+    upstream_model: '',
+    returned_model: '',
+  })
 })

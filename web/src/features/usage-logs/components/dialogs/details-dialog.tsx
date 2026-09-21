@@ -70,6 +70,7 @@ import { AuditDetailFields } from '../../audit/components/audit-detail-fields'
 import type { UsageLog } from '../../data/schema'
 import {
   parseLogOther,
+  formatModelName,
   getParamOverrideActionLabel,
   parseAuditLine,
   decodeBillingExprB64,
@@ -479,6 +480,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const { t } = useTranslation()
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const other = parseLogOther(props.log.other)
+  const modelInfo = formatModelName(props.log)
   const typeConfig = getLogTypeConfig(props.log.type)
 
   const isViolation = isViolationFeeLog(other)
@@ -651,6 +653,23 @@ export function DetailsDialog(props: DetailsDialogProps) {
       <div className='w-full max-w-full min-w-0 space-y-2.5 overflow-x-hidden py-1 sm:space-y-3'>
         {[2, 5].includes(props.log.type) && !other?.is_task && (
           <DetailSection label={t('Upstream Response')}>
+            {!modelInfo.responseModel && (
+              <>
+                {!(other?.is_model_mapped && other.upstream_model_name) && (
+                  <DetailRow
+                    label={t('Request Model')}
+                    value={modelInfo.name}
+                    mono
+                  />
+                )}
+                {modelInfo.reasoningEffort && (
+                  <DetailRow
+                    label={t('Request Reasoning Effort')}
+                    value={modelInfo.reasoningEffort}
+                  />
+                )}
+              </>
+            )}
             <UpstreamResponseDetails other={other} />
           </DetailSection>
         )}
@@ -1134,9 +1153,12 @@ export function DetailsDialog(props: DetailsDialogProps) {
           />
         )}
 
-        {other?.response_model && (
+        {modelInfo.responseModel && (
           <DetailSection label={t('Response Model')}>
-            <ResponseModelDetails observation={other.response_model} />
+            <ResponseModelDetails
+              observation={modelInfo.responseModel}
+              reasoningEffort={modelInfo.reasoningEffort}
+            />
           </DetailSection>
         )}
         {/* Model mapping for logs without response observations */}
@@ -1146,7 +1168,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
             <DetailSection label={t('Model Mapping')}>
               <DetailRow
                 label={t('Request Model')}
-                value={props.log.model_name}
+                value={modelInfo.name}
                 mono
               />
               <DetailRow

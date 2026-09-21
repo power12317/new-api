@@ -38,7 +38,8 @@ import {
   isDisplayableLogType,
   isTimingLogType,
 } from '../lib/utils'
-import { ModelBadge, ResponseModelDetails } from './model-badge'
+import { LogModelDisplay } from './log-model-display'
+import { ResponseModelDetails } from './model-badge'
 import { StreamTpsCell, TimingMetricsCell } from './timing-metrics-cell'
 import { useUsageLogsContext } from './usage-logs-provider'
 
@@ -147,11 +148,10 @@ export function CommonLogMobileCard<TData>(props: {
       <div className='flex min-w-0 flex-wrap items-start gap-x-3 gap-y-2'>
         {fields.model.visible && (
           <div className='min-w-0 flex-[1_1_10rem]'>
-            <ModelBadge
+            <LogModelDisplay
               modelName={model.name}
-              actualModel={model.actualModel}
+              reasoningEffort={model.reasoningEffort}
               responseModel={model.responseModel}
-              wrapText
               onInspect={() => setSelectedField('model')}
             />
           </div>
@@ -362,7 +362,10 @@ export function CommonLogMobileCard<TData>(props: {
               {activeField.value}
             </p>
             {selectedField === 'model' && model.responseModel && (
-              <ResponseModelDetails observation={model.responseModel} />
+              <ResponseModelDetails
+                observation={model.responseModel}
+                reasoningEffort={model.reasoningEffort}
+              />
             )}
             {selectedField === 'model' &&
               !model.responseModel &&

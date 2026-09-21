@@ -341,9 +341,7 @@ it('opens the mismatch evidence with the keyboard and shows all three models', a
   expect(screen.getByText('Request Model')).toBeVisible()
   expect(screen.getByText('Upstream Model')).toBeVisible()
   expect(screen.getByText('Response Model')).toBeVisible()
-  expect(
-    screen.getByText(/this warning alone does not prove model substitution/)
-  ).toBeVisible()
+  expect(screen.getByText('Model mismatch')).toBeVisible()
 })
 
 it.each([false, true])(
@@ -386,10 +384,12 @@ it('keeps mapped model details available when the response matches the upstream 
     />
   )
   await user.click(
-    screen.getByRole('button', { name: 'Model: requested-model' })
+    screen.getByRole('button', {
+      name: 'Model: requested-model, Response model: mapped-model',
+    })
   )
   expect(await screen.findByText('Response Model')).toBeVisible()
-  expect(screen.queryByText(/^Response model:/)).not.toBeInTheDocument()
+  expect(screen.getByText(/^Response model:/)).toBeVisible()
 })
 
 it.each([
@@ -400,7 +400,7 @@ it.each([
   'deepseek/requested-model',
   'accounts/vendor/models/MAPPED-MODEL',
 ])(
-  'keeps the compatible response %s in the popover without a list annotation',
+  'highlights %s as different from the request and keeps its full value available',
   async (returned) => {
     const user = userEvent.setup()
     render(
@@ -414,16 +414,14 @@ it.each([
       />
     )
     expect(screen.queryByText(returned)).not.toBeInTheDocument()
-    expect(screen.queryByText(/^Response model:/)).not.toBeInTheDocument()
+    expect(screen.getByText(/^Response model:/)).toBeVisible()
     const trigger = screen.getByRole('button', {
-      name: 'Model: requested-model',
+      name: `Model: requested-model, Response model: ${returned}`,
     })
-    expect(trigger).toHaveTextContent(/^requested-model$/)
+    expect(trigger).toHaveTextContent('requested-model')
     await user.click(trigger)
     expect(await screen.findByText(returned)).toBeVisible()
-    expect(screen.queryByText(/^Response model:/)).not.toBeInTheDocument()
-    expect(
-      screen.queryByText(/this warning alone does not prove model substitution/)
-    ).not.toBeInTheDocument()
+    expect(screen.getByText(/^Response model:/)).toBeVisible()
+    expect(screen.getByText('Model mismatch')).toBeVisible()
   }
 )
