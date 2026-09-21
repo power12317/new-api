@@ -96,9 +96,6 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 			sr.Stop(streamErr)
 			return
 		}
-		if claudeResponse.Message != nil {
-			info.RecordResponseModel(claudeResponse.Message.Model, false)
-		}
 		if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 			if failResponsesStream(fmt.Errorf("%s", claudeError.Message)) {
 				sr.Stop(streamErr)
@@ -119,6 +116,7 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 			info.StreamStatus.MarkCompleted()
 		}
 		if claudeResponse.Type == "message_start" && claudeResponse.Message != nil {
+			info.ObserveResponseModel(claudeResponse.Message.Model)
 			info.UpstreamModelName = claudeResponse.Message.Model
 		}
 		FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo)

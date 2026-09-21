@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -13,33 +14,23 @@ import (
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/gin-gonic/gin"
-	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 )
 
 func setupTaskPluginBindChannelTest(t *testing.T) {
 	t.Helper()
+	dialect := os.Getenv("TEST_TASK_DB_DIALECT")
+	if dialect == "" {
+		dialect = "sqlite"
+	}
+	database := modelManagementDB(t, dialect, os.Getenv("TEST_"+strings.ToUpper(dialect)+"_DSN"))
 	wasMaster := common.IsMasterNode
 	common.IsMasterNode = true
-	previousRedisEnabled := common.RedisEnabled
-	common.RedisEnabled = false
-	originalDB, originalLogDB := model.DB, model.LOG_DB
-	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	sqlDB, err := database.DB()
-	require.NoError(t, err)
-	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, database.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.CasbinRule{}, &model.AuthzRole{}, &model.Log{}, &model.AuditLog{}, &model.User{}))
-	model.DB = database
-	model.LOG_DB = database
+	require.NoError(t, database.AutoMigrate(&model.CasbinRule{}, &model.AuthzRole{}, &model.Log{}))
 	require.NoError(t, authz.Init(database))
 	t.Cleanup(func() {
 		common.IsMasterNode = wasMaster
-		common.RedisEnabled = previousRedisEnabled
-		model.DB = originalDB
-		model.LOG_DB = originalLogDB
 	})
 }
 
@@ -165,4 +156,73 @@ export function parseTaskResult() { return {}; }
 	encoded, err := common.Marshal(audits)
 	require.NoError(t, err)
 	assert.Contains(t, string(encoded), `"base_url_source":"plugin_default"`)
+}
+
+func putUpdateChannel(t *testing.T, userID, role int, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Set("id", userID)
+	context.Set("role", role)
+	context.Request = httptest.NewRequest(http.MethodPut, "/api/channel", strings.NewReader(body))
+	context.Request.Header.Set("Content-Type", "application/json")
+	UpdateChannel(context)
+	return recorder
+}
+
+func TestNewAPIChannelPluginBindingsRequireBindPermission(t *testing.T) {
+	setupTaskPluginBindChannelTest(t)
+	require.NoError(t, authz.SetUserPermissions(2, authz.PermissionsMap{authz.ResourceTaskPlugin: {authz.ActionBind: false}}))
+	const key = "gateway-bind"
+	source := `
+export const meta = {apiVersion: 1, key: "gateway-bind", name: "Gateway", version: "1.0.0", author: {name: "Test"}, models: ["gateway-doc"], fetchMode: "per_task", upstreams: ["vendor", "new_api"]};
+export function buildSubmitRequest() { return {}; }
+export function parseSubmitResponse() { return {}; }
+export function buildQueryRequest() { return {}; }
+export function parseTaskResult() { return {}; }
+`
+	_, err := jsplugin.DefaultRegistry.Register(source, jsplugin.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { jsplugin.DefaultRegistry.Unregister(key) })
+
+	bound := `{"mode":"single","channel":{"type":60,"name":"gateway","key":"sk","models":"gateway-doc","group":"default","base_url":"https://gateway.example","setting":"{\"task_extend_plugin_keys\":[\"gateway-bind\"]}"}}`
+	unbound := `{"mode":"single","channel":{"type":60,"name":"plain-gateway","key":"sk","models":"gpt","group":"default","base_url":"https://gateway.example"}}`
+	adminDenied := postAddChannel(t, 2, common.RoleAdminUser, bound)
+	assert.Contains(t, adminDenied.Body.String(), "task plugin channels require the task_plugin.bind permission")
+	rootAllowed := postAddChannel(t, 1, common.RoleRootUser, bound)
+	assert.Contains(t, rootAllowed.Body.String(), `"success":true`)
+	adminAllowed := postAddChannel(t, 3, common.RoleAdminUser, bound)
+	assert.Contains(t, adminAllowed.Body.String(), `"success":true`, "administrators can bind plugins unless explicitly denied")
+	adminUnbound := postAddChannel(t, 2, common.RoleAdminUser, unbound)
+	assert.Contains(t, adminUnbound.Body.String(), `"success":true`, "a gateway channel without plugin bindings needs no bind permission")
+
+	baseURL := "https://gateway.example"
+	setting := `{"task_extend_plugin_keys":["gateway-bind"]}`
+	channel := model.Channel{Type: constant.ChannelTypeNewAPI, Status: common.ChannelStatusEnabled, Name: "existing-gateway", Models: "gateway-doc", Group: "default", Key: "sk", BaseURL: &baseURL, Setting: &setting}
+	require.NoError(t, channel.Insert())
+	update := func(name, setting string) string {
+		return fmt.Sprintf(`{"id":%d,"type":60,"name":%q,"key":"sk","models":"gateway-doc","group":"default","base_url":"https://gateway.example","setting":%q}`, channel.Id, name, setting)
+	}
+	unchanged := putUpdateChannel(t, 2, common.RoleAdminUser, update("renamed-gateway", setting))
+	assert.Contains(t, unchanged.Body.String(), `"success":true`, "resubmitting the stored bindings does not need the bind permission")
+	assert.NotContains(t, unchanged.Body.String(), "task_plugin.bind")
+	rebound := putUpdateChannel(t, 2, common.RoleAdminUser, update("renamed-gateway", `{"task_extend_plugin_keys":[]}`))
+	assert.Contains(t, rebound.Body.String(), "task plugin channels require the task_plugin.bind permission")
+	rootRebound := putUpdateChannel(t, 1, common.RoleRootUser, update("renamed-gateway", `{"task_extend_plugin_keys":[]}`))
+	assert.Contains(t, rootRebound.Body.String(), `"success":true`)
+
+	require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", channel.Id).Update("setting", setting).Error)
+	copyChannel := func(userID, role int) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		context, _ := gin.CreateTestContext(recorder)
+		context.Set("id", userID)
+		context.Set("role", role)
+		context.Params = gin.Params{{Key: "id", Value: fmt.Sprint(channel.Id)}}
+		context.Request = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/channel/copy/%d", channel.Id), nil)
+		CopyChannel(context)
+		return recorder
+	}
+	assert.Contains(t, copyChannel(2, common.RoleAdminUser).Body.String(), "task plugin channels require the task_plugin.bind permission")
+	assert.Contains(t, copyChannel(1, common.RoleRootUser).Body.String(), `"success":true`)
 }

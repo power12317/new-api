@@ -10,20 +10,9 @@ import (
 type UpstreamResponseInfo struct {
 	StatusCode       int
 	Status           string
-	Model            string
 	TurnStateSource  string
 	TurnStateLength  *int
 	TurnStateVerdict string
-	modelFinal       bool
-}
-
-func IsResponsesTerminalEvent(event string) bool {
-	switch event {
-	case "response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled", "response.error":
-		return true
-	default:
-		return false
-	}
 }
 
 // RecordUpstreamResponse replaces the previous attempt's facts. A nil response
@@ -85,20 +74,4 @@ func (info *RelayInfo) RecordUpstreamResponse(response *http.Response, requestHe
 		}
 		return
 	}
-}
-
-// RecordResponseModel observes the provider's response before any synthesized
-// model name is introduced. Empty chunks cannot erase an earlier observation.
-func (info *RelayInfo) RecordResponseModel(model string, final bool) {
-	if info == nil || model == "" {
-		return
-	}
-	if info.UpstreamResponse == nil {
-		info.UpstreamResponse = &UpstreamResponseInfo{Status: "unknown"}
-	}
-	if info.UpstreamResponse.modelFinal && !final {
-		return
-	}
-	info.UpstreamResponse.Model = model
-	info.UpstreamResponse.modelFinal = final
 }

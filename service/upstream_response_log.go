@@ -11,15 +11,10 @@ func AppendUpstreamResponseLogInfo(info *relaycommon.RelayInfo, other *model.Log
 	if info == nil || other == nil {
 		return
 	}
-	other.SetPublic("request_reasoning_effort", info.RequestReasoningEffort)
-	if info.OriginModelName != "" {
-		other.SetPublic("request_model", info.OriginModelName)
-	}
 	response := info.UpstreamResponse
 	if response == nil {
 		return
 	}
-	other.SetPublic("response_model", response.Model)
 	other.SetPublic("upstream_request_status", response.Status)
 	if response.StatusCode != 0 {
 		other.SetPublic("upstream_status_code", response.StatusCode)

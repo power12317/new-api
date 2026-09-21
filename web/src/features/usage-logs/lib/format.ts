@@ -161,7 +161,28 @@ export function hasToolSurcharge(other: LogOtherData | null): boolean {
 export function parseLogOther(other: string): LogOtherData | null {
   if (!other) return null
   try {
-    return JSON.parse(other) as LogOtherData
+    const parsed = JSON.parse(other) as Record<string, unknown> | null
+    // Older fork logs stored only the returned model string. Normalize them
+    // into the upstream observation contract without changing saved records.
+    if (parsed && typeof parsed.response_model === 'string') {
+      const returned = parsed.response_model
+      if (returned) {
+        parsed.response_model = {
+          requested_model:
+            typeof parsed.request_model === 'string'
+              ? parsed.request_model
+              : '',
+          upstream_model:
+            typeof parsed.upstream_model_name === 'string'
+              ? parsed.upstream_model_name
+              : '',
+          returned_model: returned,
+        }
+      } else {
+        delete parsed.response_model
+      }
+    }
+    return parsed as LogOtherData | null
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('Failed to parse log other field:', error)
@@ -239,6 +260,7 @@ export function formatModelName(log: UsageLog): {
   name: string
   isMapped: boolean
   actualModel?: string
+  responseModel?: LogOtherData['response_model']
 } {
   const other = parseLogOther(log.other)
   const isMapped = !!(
@@ -248,9 +270,10 @@ export function formatModelName(log: UsageLog): {
   )
 
   return {
-    name: other?.request_model || log.model_name,
+    name: log.model_name,
     isMapped,
     actualModel: isMapped ? other.upstream_model_name : undefined,
+    responseModel: other?.response_model,
   }
 }
 
