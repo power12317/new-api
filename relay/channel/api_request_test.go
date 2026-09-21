@@ -6,7 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,6 +25,101 @@ func TestNewTaskAPIRequestInheritsClientCancellation(t *testing.T) {
 	cancel()
 
 	require.ErrorIs(t, upstream.Context().Err(), context.Canceled)
+}
+
+func TestPreparePassThroughRequestPreservesHeadersExceptCredentialAndHost(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "https://client.example/v1/responses", nil)
+	ctx.Request.Header = http.Header{
+		"Authorization":     {"Bearer client-token"},
+		"Content-Type":      {"application/json; charset=utf-8"},
+		"Accept":            {"text/event-stream", "application/json"},
+		"X-Custom":          {"first", "second"},
+		"X-Codex-Window-Id": {"window-1"},
+		"Host":              {"client.example"},
+	}
+
+	upstream, err := http.NewRequest(http.MethodPost, "https://upstream.example/v1/responses", nil)
+	require.NoError(t, err)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType: constant.ChannelTypeOpenAI,
+			ApiKey:      "upstream-token",
+		},
+	}
+
+	require.NoError(t, preparePassThroughRequest(upstream, ctx, info))
+	require.Equal(t, "upstream.example", upstream.Host)
+	require.NotContains(t, upstream.Header, "Host")
+	require.Equal(t, []string{"application/json; charset=utf-8"}, upstream.Header.Values("Content-Type"))
+	require.Equal(t, []string{"text/event-stream", "application/json"}, upstream.Header.Values("Accept"))
+	require.Equal(t, []string{"first", "second"}, upstream.Header.Values("X-Custom"))
+	require.Equal(t, []string{"window-1"}, upstream.Header.Values("X-Codex-Window-Id"))
+	require.Equal(t, "Bearer upstream-token", upstream.Header.Get("Authorization"))
+}
+
+func TestPreparePassThroughRequestUsesChannelCredentialHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, test := range []struct {
+		name        string
+		channelType int
+		wantHeader  string
+	}{
+		{name: "azure", channelType: constant.ChannelTypeAzure, wantHeader: "api-key"},
+		{name: "anthropic", channelType: constant.ChannelTypeAnthropic, wantHeader: "x-api-key"},
+		{name: "gemini", channelType: constant.ChannelTypeGemini, wantHeader: "x-goog-api-key"},
+		{name: "openai", channelType: constant.ChannelTypeOpenAI, wantHeader: "Authorization"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "https://client.example/v1", nil)
+			ctx.Request.Header.Set("Authorization", "Bearer client-token")
+			ctx.Request.Header.Set("api-key", "client-api-key")
+			ctx.Request.Header.Set("x-api-key", "client-x-api-key")
+			ctx.Request.Header.Set("x-goog-api-key", "client-goog-key")
+			upstream, err := http.NewRequest(http.MethodPost, "https://upstream.example/v1", nil)
+			require.NoError(t, err)
+			info := &relaycommon.RelayInfo{
+				ChannelMeta: &relaycommon.ChannelMeta{
+					ChannelType: test.channelType,
+					ApiKey:      "upstream-token",
+				},
+			}
+
+			require.NoError(t, preparePassThroughRequest(upstream, ctx, info))
+			wantValue := "upstream-token"
+			if test.wantHeader == "Authorization" {
+				wantValue = "Bearer upstream-token"
+			}
+			require.Equal(t, wantValue, upstream.Header.Get(test.wantHeader))
+			for _, name := range []string{"Authorization", "api-key", "x-api-key", "x-goog-api-key"} {
+				if name != test.wantHeader {
+					require.Empty(t, upstream.Header.Get(name), name)
+				}
+			}
+		})
+	}
+}
+
+func TestRequestPassThroughEnabledByGlobalOrChannelSetting(t *testing.T) {
+	settings := model_setting.GetGlobalSettings()
+	original := settings.PassThroughRequestEnabled
+	t.Cleanup(func() { settings.PassThroughRequestEnabled = original })
+
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+	settings.PassThroughRequestEnabled = false
+	info.ChannelSetting.PassThroughBodyEnabled = false
+	assert.False(t, requestPassThroughEnabled(info))
+
+	info.ChannelSetting.PassThroughBodyEnabled = true
+	assert.True(t, requestPassThroughEnabled(info))
+
+	info.ChannelSetting.PassThroughBodyEnabled = false
+	settings.PassThroughRequestEnabled = true
+	assert.True(t, requestPassThroughEnabled(info))
 }
 
 func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {

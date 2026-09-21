@@ -12,12 +12,14 @@ import (
 	"time"
 
 	common2 "github.com/QuantumNous/new-api/common"
+	rootconstant "github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/bytedance/gopkg/util/gopool"
@@ -310,6 +312,69 @@ func applyHeaderOverrideToRequest(req *http.Request, headerOverride map[string]s
 	}
 }
 
+func requestPassThroughEnabled(info *common.RelayInfo) bool {
+	return info != nil && (model_setting.GetGlobalSettings().PassThroughRequestEnabled ||
+		(info.ChannelMeta != nil && info.ChannelSetting.PassThroughBodyEnabled))
+}
+
+// preparePassThroughRequest preserves the incoming HTTP headers and body. The
+// upstream URL and the channel credential are the only request-level values
+// that are changed here. Header overrides and adaptor defaults are deliberately
+// skipped because they would violate pass-through semantics.
+func preparePassThroughRequest(req *http.Request, c *gin.Context, info *common.RelayInfo) error {
+	if req == nil || c == nil || c.Request == nil || info == nil || info.ChannelMeta == nil {
+		return fmt.Errorf("missing request context for pass-through")
+	}
+
+	req.Header = c.Request.Header.Clone()
+	if req.Header == nil {
+		req.Header = make(http.Header)
+	}
+	// Host is represented by Request.Host in net/http and must follow the
+	// channel URL. A client-supplied Host header must never redirect the request.
+	for name := range req.Header {
+		if strings.EqualFold(name, "Host") {
+			delete(req.Header, name)
+		}
+	}
+	req.Host = req.URL.Host
+
+	// Remove credential headers before installing the channel credential. Other
+	// headers, including custom Authorization-like metadata, are preserved only
+	// when they are not one of the standard API-key header names.
+	for _, name := range []string{"Authorization", "api-key", "x-api-key", "x-goog-api-key", "Chatgpt-Account-Id"} {
+		for existingName := range req.Header {
+			if strings.EqualFold(existingName, name) {
+				delete(req.Header, existingName)
+			}
+		}
+	}
+
+	switch info.ChannelType {
+	case rootconstant.ChannelTypeAzure:
+		req.Header.Set("api-key", info.ApiKey)
+	case rootconstant.ChannelTypeAnthropic:
+		req.Header.Set("x-api-key", info.ApiKey)
+	case rootconstant.ChannelTypeGemini, rootconstant.ChannelTypePaLM:
+		req.Header.Set("x-goog-api-key", info.ApiKey)
+	case rootconstant.ChannelTypeCodex:
+		var codexKey struct {
+			AccessToken string `json:"access_token"`
+			AccountID   string `json:"account_id"`
+		}
+		if err := common2.Unmarshal([]byte(info.ApiKey), &codexKey); err != nil {
+			return fmt.Errorf("parse codex pass-through credential: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+codexKey.AccessToken)
+		if codexKey.AccountID != "" {
+			req.Header.Set("Chatgpt-Account-Id", codexKey.AccountID)
+		}
+	default:
+		req.Header.Set("Authorization", "Bearer "+info.ApiKey)
+	}
+	return nil
+}
+
 func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
@@ -321,18 +386,24 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
 	ApplyUpstreamBodyMetadata(req, requestBody)
-	headers := req.Header
-	err = a.SetupRequestHeader(c, &headers, info)
-	if err != nil {
-		return nil, fmt.Errorf("setup request header failed: %w", err)
+	if requestPassThroughEnabled(info) {
+		if err := preparePassThroughRequest(req, c, info); err != nil {
+			return nil, err
+		}
+	} else {
+		headers := req.Header
+		err = a.SetupRequestHeader(c, &headers, info)
+		if err != nil {
+			return nil, fmt.Errorf("setup request header failed: %w", err)
+		}
+		// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
+		// 这样可以覆盖默认的 Authorization header 设置
+		headerOverride, err := processHeaderOverride(info, c)
+		if err != nil {
+			return nil, err
+		}
+		applyHeaderOverrideToRequest(req, headerOverride)
 	}
-	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
-	// 这样可以覆盖默认的 Authorization header 设置
-	headerOverride, err := processHeaderOverride(info, c)
-	if err != nil {
-		return nil, err
-	}
-	applyHeaderOverrideToRequest(req, headerOverride)
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
@@ -351,20 +422,26 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
 	ApplyUpstreamBodyMetadata(req, requestBody)
-	// set form data
-	req.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
-	headers := req.Header
-	err = a.SetupRequestHeader(c, &headers, info)
-	if err != nil {
-		return nil, fmt.Errorf("setup request header failed: %w", err)
+	if requestPassThroughEnabled(info) {
+		if err := preparePassThroughRequest(req, c, info); err != nil {
+			return nil, err
+		}
+	} else {
+		// set form data
+		req.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
+		headers := req.Header
+		err = a.SetupRequestHeader(c, &headers, info)
+		if err != nil {
+			return nil, fmt.Errorf("setup request header failed: %w", err)
+		}
+		// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
+		// 这样可以覆盖默认的 Authorization header 设置
+		headerOverride, err := processHeaderOverride(info, c)
+		if err != nil {
+			return nil, err
+		}
+		applyHeaderOverrideToRequest(req, headerOverride)
 	}
-	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
-	// 这样可以覆盖默认的 Authorization header 设置
-	headerOverride, err := processHeaderOverride(info, c)
-	if err != nil {
-		return nil, err
-	}
-	applyHeaderOverrideToRequest(req, headerOverride)
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
@@ -383,20 +460,31 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	}
 	fullRequestURL = toWebSocketURL(fullRequestURL)
 	targetHeader := http.Header{}
-	err = a.SetupRequestHeader(c, &targetHeader, info)
-	if err != nil {
-		return nil, fmt.Errorf("setup request header failed: %w", err)
+	if requestPassThroughEnabled(info) {
+		upstreamReq, requestErr := http.NewRequest(c.Request.Method, fullRequestURL, nil)
+		if requestErr != nil {
+			return nil, fmt.Errorf("new pass-through websocket request failed: %w", requestErr)
+		}
+		if requestErr = preparePassThroughRequest(upstreamReq, c, info); requestErr != nil {
+			return nil, requestErr
+		}
+		targetHeader = upstreamReq.Header
+	} else {
+		err = a.SetupRequestHeader(c, &targetHeader, info)
+		if err != nil {
+			return nil, fmt.Errorf("setup request header failed: %w", err)
+		}
+		// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
+		// 这样可以覆盖默认的 Authorization header 设置
+		headerOverride, err := processHeaderOverride(info, c)
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range headerOverride {
+			targetHeader.Set(key, value)
+		}
+		targetHeader.Set("Content-Type", c.Request.Header.Get("Content-Type"))
 	}
-	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
-	// 这样可以覆盖默认的 Authorization header 设置
-	headerOverride, err := processHeaderOverride(info, c)
-	if err != nil {
-		return nil, err
-	}
-	for key, value := range headerOverride {
-		targetHeader.Set(key, value)
-	}
-	targetHeader.Set("Content-Type", c.Request.Header.Get("Content-Type"))
 	dialer := *websocket.DefaultDialer
 	if info.ChannelSetting.Proxy != "" {
 		proxyURL, _, proxyErr := common2.ParseProxyURLRuntime(info.ChannelSetting.Proxy)
