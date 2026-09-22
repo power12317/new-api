@@ -332,6 +332,82 @@ func TestManageUserQuotaFailuresDoNotRecordTopup(t *testing.T) {
 	}
 }
 
+func TestManageUserQuotaAllowsAdministratorSelfAndPeers(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode string
+		self       bool
+		targetRole int
+		value      int
+		wantQuota  int
+	}{
+		{"self_add", "add", true, common.RoleAdminUser, 500, 1500},
+		{"self_subtract", "subtract", true, common.RoleAdminUser, 200, 800},
+		{"self_override", "override", true, common.RoleAdminUser, 2500, 2500},
+		{"peer_add", "add", false, common.RoleAdminUser, 500, 1500},
+		{"peer_subtract", "subtract", false, common.RoleAdminUser, 200, 800},
+		{"peer_override", "override", false, common.RoleAdminUser, 2500, 2500},
+		{"user_add", "add", false, common.RoleCommonUser, 500, 1500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupManageUserTestDB(t)
+			require.NoError(t, authz.Init(db))
+			pat := "quota-admin-test-token"
+			operator := model.User{Id: 9999, Username: "quota-admin", Password: "private-password-hash", Role: common.RoleAdminUser, Status: common.UserStatusEnabled, AuthVersion: 1, AccessToken: &pat, Quota: 1000, AffCode: "quota-admin-aff"}
+			require.NoError(t, db.Create(&operator).Error)
+			target := operator
+			if !tc.self {
+				target = model.User{Id: 1, Username: "peer-admin", Password: "private-password-hash", Role: tc.targetRole, Status: common.UserStatusEnabled, AuthVersion: 1, Quota: 1000, AffCode: "peer-admin-aff"}
+				require.NoError(t, db.Create(&target).Error)
+			}
+			router := gin.New()
+			router.Use(middleware.RequestId(), middleware.AdminAuth())
+			router.GET("/api/user/:id", GetUser)
+			router.POST("/api/user/manage", ManageUser)
+			for _, step := range []struct {
+				method, path, body string
+				wantQuota          int
+			}{
+				{http.MethodPost, "/api/user/manage", fmt.Sprintf(`{"id":%d,"action":"add_quota","mode":%q,"value":%d}`, target.Id, tc.mode, tc.value), tc.wantQuota},
+			} {
+				request := httptest.NewRequest(step.method, step.path, strings.NewReader(step.body))
+				request.Header.Set("Authorization", "Bearer "+pat)
+				request.Header.Set("Content-Type", "application/json")
+				recorder := httptest.NewRecorder()
+				router.ServeHTTP(recorder, request)
+				require.Equal(t, http.StatusOK, recorder.Code)
+				var result struct {
+					Success bool
+					Data    model.User
+				}
+				require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &result))
+				require.True(t, result.Success, "%s %s: %s", step.method, step.path, recorder.Body.String())
+				assert.NotContains(t, recorder.Body.String(), operator.Password)
+				assert.NotContains(t, recorder.Body.String(), pat)
+			}
+			require.NoError(t, db.First(&target, target.Id).Error)
+			assert.Equal(t, tc.wantQuota, target.Quota)
+			assert.Equal(t, tc.targetRole, target.Role)
+			assert.Equal(t, common.UserStatusEnabled, target.Status)
+			assert.EqualValues(t, 1, target.AuthVersion)
+			var logs []model.Log
+			require.NoError(t, model.LOG_DB.Where("type = ?", model.LogTypeTopup).Find(&logs).Error)
+			require.Len(t, logs, 1)
+			assert.Equal(t, target.Id, logs[0].UserId)
+			var audits []model.AuditLog
+			require.NoError(t, model.LOG_DB.Where("category = ?", model.AuditCategoryOperation).Find(&audits).Error)
+			require.Len(t, audits, 1)
+			assert.True(t, audits[0].Success)
+			assert.Equal(t, operator.Id, audits[0].UserId)
+			assert.Equal(t, common.RoleAdminUser, audits[0].ActorRole)
+			params, err := common.Marshal(audits[0].Other.Op.Params)
+			require.NoError(t, err)
+			assert.Contains(t, string(params), fmt.Sprintf(`"target_user_id":%d`, target.Id))
+			assert.Contains(t, string(params), `"from":1000`)
+			assert.Contains(t, string(params), fmt.Sprintf(`"to":%d`, tc.wantQuota))
+		})
+	}
+}
+
 func TestManageUserQuotaLogFailureKeepsSuccessfulAdjustment(t *testing.T) {
 	for _, failedTable := range []string{"logs", "audit_logs"} {
 		t.Run(failedTable, func(t *testing.T) {
@@ -372,7 +448,7 @@ func TestManageUserQuotaTargetsAndWalletBounds(t *testing.T) {
 		{name: "negative_id", mode: "subtract", value: 1, targetID: -1, reason: "invalid_parameters"},
 		{name: "missing", mode: "override", value: 1, targetID: 12345, reason: "target_not_found"},
 		{name: "deleted", mode: "add", value: 1, targetID: 1, deleted: true, reason: "target_not_found"},
-		{name: "peer_admin", mode: "add", value: 1, targetID: 1, targetRole: common.RoleAdminUser, operatorRole: common.RoleAdminUser, reason: "permission_denied"},
+		{name: "ordinary_user", mode: "add", value: 1, targetID: 1, targetRole: common.RoleCommonUser, operatorRole: common.RoleCommonUser, reason: "permission_denied"},
 		{name: "higher_role", mode: "override", value: 1, targetID: 1, targetRole: common.RoleRootUser, operatorRole: common.RoleAdminUser, reason: "permission_denied"},
 		{name: "read_error", mode: "add", value: 1, targetID: 1, failRead: true, reason: "database_error"},
 		{name: "add_overflow", mode: "add", before: common.MaxWalletQuota, value: 1, targetID: 1, reason: "quota_limit_exceeded"},

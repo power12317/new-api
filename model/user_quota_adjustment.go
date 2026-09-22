@@ -40,7 +40,12 @@ func AdjustUserQuota(userID, operatorRole int, mode string, value int) (*UserQuo
 		if err := lockForUpdate(tx).First(&user, userID).Error; err != nil {
 			return err
 		}
-		if operatorRole != common.RoleRootUser && operatorRole <= user.Role {
+		// Administrators may manage balances for themselves and for peer
+		// administrators. Role changes and profile edits keep their stricter
+		// hierarchy checks in controller/user.go; quota adjustment is a separate
+		// accounting operation that day-to-day administrators need to perform.
+		if operatorRole != common.RoleRootUser &&
+			(operatorRole < common.RoleAdminUser || operatorRole < user.Role) {
 			return ErrUserQuotaPermission
 		}
 		if user.Quota > common.MaxWalletQuota || user.Quota < -common.MaxWalletQuota {
