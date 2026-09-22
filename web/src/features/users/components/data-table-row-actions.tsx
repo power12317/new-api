@@ -230,12 +230,7 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         </DropdownMenuItem>
 
         {canAdjustQuota && (
-          <DropdownMenuItem
-            onSelect={(event) => {
-              event.preventDefault()
-              setQuotaDialogOpen(true)
-            }}
-          >
+          <DropdownMenuItem onClick={() => setQuotaDialogOpen(true)}>
             {t('Adjust Quota')}
             <DropdownMenuShortcut>
               <CreditCard size={16} />
