@@ -84,8 +84,9 @@ func TestAdministratorManagementAndChannelSecretAccess(t *testing.T) {
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.AuthFlow{}, &model.TwoFA{}, &model.PasskeyCredential{}, &model.UserOAuthBinding{}, &model.AuditLog{}, &model.Channel{}, &model.Option{}, &model.CasbinRule{}, &model.AuthzRole{}, &model.CustomOAuthProvider{}, &model.SystemInstance{}, &model.SystemTask{}, &model.TaskPlugin{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.UserAccessToken{}, &model.AuthFlow{}, &model.TwoFA{}, &model.PasskeyCredential{}, &model.UserOAuthBinding{}, &model.AuditLog{}, &model.Channel{}, &model.Option{}, &model.CasbinRule{}, &model.AuthzRole{}, &model.CustomOAuthProvider{}, &model.SystemInstance{}, &model.SystemTask{}, &model.TaskPlugin{}))
 	model.DB, model.LOG_DB = db, db
+	require.NoError(t, model.EnsureLegacyAccessTokenRetireAt(time.Now().Unix()))
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
 	common.IsMasterNode, common.RedisEnabled = true, false
 	common.GlobalApiRateLimitEnable, common.CriticalRateLimitEnable = false, false
@@ -109,7 +110,19 @@ func TestAdministratorManagementAndChannelSecretAccess(t *testing.T) {
 			require.NoError(t, db.Create(&model.TwoFA{UserId: user.Id, Secret: "test-factor", IsEnabled: true}).Error)
 			bundle, err := service.CreateLoginSession(user.Id, "2fa", "127.0.0.1", "management-test")
 			require.NoError(t, err)
-			for _, credential := range []string{pat, bundle.AccessToken} {
+			scopedPAT := fmt.Sprintf("nap_management-scoped-fixture-%d", role)
+			var scopes []string
+			for _, group := range service.AccessTokenCatalog(user.Id, role) {
+				for _, resource := range group.Resources {
+					for _, action := range resource.Actions {
+						scopes = append(scopes, resource.Resource+":"+action.Action)
+					}
+				}
+			}
+			scoped := model.UserAccessToken{UserId: user.Id, Name: "management fixture", TokenHash: model.AccessTokenFingerprint(scopedPAT)}
+			require.NoError(t, scoped.SetScopes(scopes))
+			require.NoError(t, db.Create(&scoped).Error)
+			for _, credential := range []string{pat, bundle.AccessToken, scopedPAT} {
 				for _, path := range []string{"/api/option/", "/api/option/request_policy", "/api/custom-oauth-provider/", "/api/performance/stats", "/api/ratio_sync/channels", "/api/plugin/task/runtime/status", "/api/system-info/instances", "/api/system-task/current?type=log_cleanup", "/api/task_plugin_options", "/api/audit"} {
 					request := httptest.NewRequest(http.MethodGet, path, nil)
 					request.Header.Set("Authorization", "Bearer "+credential)

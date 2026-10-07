@@ -310,6 +310,36 @@ it('shows the OpenAI icon in the mobile model button', () => {
   ).toContainElement(screen.getByLabelText('OpenAI'))
 })
 
+it.each([false, true])(
+  'keeps long model labels readable in their requested layout (truncate: %s)',
+  (truncateText) => {
+    const modelName = 'provider-model-with-a-long-dated-version-2026-10-07'
+    render(
+      <ModelBadge
+        modelName={modelName}
+        wrapText={!truncateText}
+        truncateText={truncateText}
+        copyable={false}
+      />
+    )
+    const text = screen.getByText(modelName)
+    const badge = text.closest('[data-slot="status-badge"]')
+    expect(badge).toHaveClass('max-w-full')
+    if (truncateText) {
+      expect(text).toHaveClass('truncate', 'whitespace-nowrap')
+      expect(text).not.toHaveClass('line-clamp-2')
+    } else {
+      expect(text).toHaveClass(
+        'line-clamp-2',
+        'leading-5',
+        '[overflow-wrap:anywhere]'
+      )
+      expect(text).not.toHaveClass('truncate')
+      expect(badge).toHaveClass('min-h-6', 'py-px')
+    }
+  }
+)
+
 it('makes the Wan icon available to model icon selectors', () => {
   expect(getLobeIconNames()).toContain('Wan')
 })

@@ -31,13 +31,19 @@ export function LogModelDisplay(props: {
   modelName: string
   reasoningEffort?: string
   responseModel?: LogOtherData['response_model']
+  wrapText?: boolean
   onInspect?: () => void
 }) {
   const { t } = useTranslation()
   const returned = props.responseModel?.returned_model
   const mismatch = isResponseModelMismatch(props.responseModel)
   const badge = (
-    <ModelBadge modelName={props.modelName} truncateText copyable={false} />
+    <ModelBadge
+      modelName={props.modelName}
+      wrapText={props.wrapText}
+      truncateText={!props.wrapText}
+      copyable={false}
+    />
   )
 
   return (

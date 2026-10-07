@@ -59,7 +59,7 @@ function ModelBadgeContent(props: ModelBadgeProps & { copyable: boolean }) {
       className={cn(
         'border-border/60 bg-muted/30 h-6 max-w-none gap-1.5 rounded-md border px-2 [font-family:var(--font-body)]',
         provider?.icon && 'text-foreground',
-        props.wrapText && 'h-auto min-h-6 max-w-full py-0.5 whitespace-normal',
+        props.wrapText && 'h-auto min-h-6 max-w-full py-px whitespace-normal',
         props.truncateText && 'max-w-full min-w-0',
         props.className
       )}
@@ -85,7 +85,7 @@ function ModelBadgeContent(props: ModelBadgeProps & { copyable: boolean }) {
           className={cn(
             'whitespace-nowrap',
             props.wrapText &&
-              'line-clamp-2 whitespace-normal [overflow-wrap:anywhere]',
+              'line-clamp-2 leading-5 whitespace-normal [overflow-wrap:anywhere]',
             props.truncateText && 'truncate whitespace-nowrap'
           )}
         >
