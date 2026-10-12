@@ -275,7 +275,7 @@ func TestResponseModelLogKeepsOriginalEffortAcrossOverridesAndRetries(t *testing
 	require.Contains(t, other.Snapshot(), "response_model")
 	request.ReasoningEffort = "max"
 	info.InitChannelMeta(c)
-	info.RecordUpstreamResponse(&http.Response{StatusCode: http.StatusOK}, nil)
+	info.RecordUpstreamResponse(&http.Response{StatusCode: http.StatusOK})
 	other = service.GenerateTextOtherInfo(c, info, 1, 1, 1, 0, 0, 0, 1)
 	assert.Equal(t, "high", other.Snapshot()["request_reasoning_effort"])
 	assert.Equal(t, relaycommon.ResponseModel{RequestedModel: "requested", UpstreamModel: "requested"}, other.Snapshot()["response_model"])

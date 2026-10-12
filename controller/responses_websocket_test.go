@@ -525,6 +525,128 @@ func assertResponsesWSAccounting(t *testing.T, fixture *responsesWSBillingTest, 
 	assert.Equal(t, charged, fixture.user.UsedQuota)
 }
 
+func TestResponsesWebSocketCPAStatusIsPrivateAndScopedToEachGeneration(t *testing.T) {
+	rounds := []struct {
+		statuses []string
+		want     string
+	}{
+		{[]string{"normal", "degraded"}, "degraded"},
+		{[]string{"normal"}, "normal"},
+		{[]string{"degraded", "normal"}, "degraded"},
+		{nil, ""},
+	}
+	publicFrames := []struct {
+		kind int
+		body string
+	}{
+		{websocket.TextMessage, ` {"type":"response.output_text.delta", "delta":"ordinary business bytes"} `},
+		{websocket.TextMessage, `{"type":"cpa.status","status":"normal","data":"keep"}`},
+		{websocket.TextMessage, `{"type":"cpa.status","status":"unknown"}`},
+		{websocket.TextMessage, `{"type":"cpa.status","status":true}`},
+		{websocket.TextMessage, `{"type":"cpa.status","status":"normal","status":"normal"}`},
+		{websocket.TextMessage, `{"type":"cpa.status","type":"cpa.status","status":"normal"}`},
+		{websocket.TextMessage, `{"type":"cpa.status","status":"normal"`},
+		{websocket.BinaryMessage, `{"type":"cpa.status","status":"normal"}`},
+	}
+	terminals := make([]string, len(rounds))
+	for index := range rounds {
+		terminals[index] = fmt.Sprintf(` {"type":"response.completed","response":{"id":"cpa_%d","status":"completed","model":"ws-billing","output":[],"usage":{"input_tokens":100,"output_tokens":10,"total_tokens":110}}} `, index)
+	}
+	fixture := newResponsesWSBillingTest(t, `tier("base", p * 2)`, func(ws *websocket.Conn, r *http.Request) {
+		assert.Equal(t, "1", r.Header.Get("X-CPA-Status"))
+		for index, round := range rounds {
+			_, _, err := ws.ReadMessage()
+			if !assert.NoError(t, err) {
+				return
+			}
+			for _, status := range round.statuses {
+				metadata := fmt.Sprintf(`{"type":"cpa.status","status":%q}`, status)
+				if !assert.NoError(t, ws.WriteMessage(websocket.TextMessage, []byte(metadata))) {
+					return
+				}
+			}
+			for _, frame := range publicFrames {
+				if !assert.NoError(t, ws.WriteMessage(frame.kind, []byte(frame.body))) {
+					return
+				}
+			}
+			if !assert.NoError(t, ws.WriteMessage(websocket.TextMessage, []byte(terminals[index]))) {
+				return
+			}
+		}
+		_, _, _ = ws.ReadMessage()
+	})
+	for index := range rounds {
+		require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"ws-billing","input":"hi"}`)))
+		require.NoError(t, fixture.client.SetReadDeadline(time.Now().Add(3*time.Second)))
+		for _, frame := range publicFrames {
+			kind, body, err := fixture.client.ReadMessage()
+			require.NoError(t, err)
+			assert.Equal(t, frame.kind, kind)
+			assert.Equal(t, frame.body, string(body))
+		}
+		kind, body, err := fixture.client.ReadMessage()
+		require.NoError(t, err)
+		assert.Equal(t, websocket.TextMessage, kind)
+		assert.Equal(t, terminals[index], string(body))
+	}
+	fixture.closeAndWait(t)
+	assert.Equal(t, int32(1), fixture.connections.Load())
+	assertResponsesWSAccounting(t, fixture, []int{100, 100, 100, 100})
+	var logs []model.Log
+	require.NoError(t, model.LOG_DB.Where("type = ?", model.LogTypeConsume).Order("id").Find(&logs).Error)
+	require.Len(t, logs, len(rounds))
+	for index, round := range rounds {
+		var other map[string]any
+		require.NoError(t, common.UnmarshalJsonStr(logs[index].Other, &other))
+		if round.want == "" {
+			assert.NotContains(t, other, "upstream_request_status", "a new generation cannot inherit the previous verdict")
+		} else {
+			assert.Equal(t, round.want, other["upstream_request_status"])
+		}
+		assert.NotContains(t, other, "upstream_status_code", "a WebSocket generation has no HTTP response code")
+		assert.NotContains(t, logs[index].Other, "turn_state_")
+	}
+}
+
+func TestResponsesWebSocketCPAStatusOptOutPreservesUnknownFrames(t *testing.T) {
+	for _, value := range []string{"0", ""} {
+		t.Run("override="+value, func(t *testing.T) {
+			metadata := `{"type":"cpa.status","status":"degraded"}`
+			terminal := `{"type":"response.completed","response":{"id":"opt_out","status":"completed","model":"ws-billing","output":[],"usage":{"input_tokens":100,"output_tokens":10,"total_tokens":110}}}`
+			fixture := newResponsesWSBillingTest(t, `tier("base", p * 2)`, func(ws *websocket.Conn, r *http.Request) {
+				assert.Equal(t, value, r.Header.Get("X-CPA-Status"))
+				_, _, err := ws.ReadMessage()
+				if !assert.NoError(t, err) {
+					return
+				}
+				for _, frame := range []string{metadata, terminal} {
+					if !assert.NoError(t, ws.WriteMessage(websocket.TextMessage, []byte(frame))) {
+						return
+					}
+				}
+				_, _, _ = ws.ReadMessage()
+			})
+			override, err := common.Marshal(map[string]string{"X-CPA-Status": value})
+			require.NoError(t, err)
+			require.NoError(t, model.DB.Model(fixture.channel).Update("header_override", string(override)).Error)
+			require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"ws-billing","input":"hi"}`)))
+			require.NoError(t, fixture.client.SetReadDeadline(time.Now().Add(3*time.Second)))
+			for _, frame := range []string{metadata, terminal} {
+				kind, body, err := fixture.client.ReadMessage()
+				require.NoError(t, err)
+				assert.Equal(t, websocket.TextMessage, kind)
+				assert.Equal(t, frame, string(body))
+			}
+			fixture.closeAndWait(t)
+			var logs []model.Log
+			require.NoError(t, model.LOG_DB.Where("type = ?", model.LogTypeConsume).Find(&logs).Error)
+			require.Len(t, logs, 1)
+			assert.NotContains(t, logs[0].Other, "upstream_request_status")
+		})
+	}
+}
+
 func TestResponsesWebSocketReusesConnectionAndSettlesEachRequest(t *testing.T) {
 	type upstreamRequest struct {
 		Authorization      string

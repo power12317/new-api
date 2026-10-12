@@ -317,6 +317,32 @@ func requestPassThroughEnabled(info *common.RelayInfo) bool {
 		(info.ChannelMeta != nil && info.ChannelSetting.PassThroughBodyEnabled))
 }
 
+// negotiateCPAStatus applies the same opt-in default to HTTP and WebSocket
+// inference while preserving explicit channel and pass-through header values.
+func negotiateCPAStatus(headers http.Header, info *common.RelayInfo) {
+	for name := range headers {
+		if strings.EqualFold(name, common.CPAStatusHeader) {
+			return
+		}
+	}
+	if !requestPassThroughEnabled(info) {
+		// The override resolver omits empty values. An explicitly empty
+		// CPA entry must still suppress this opt-in default.
+		var overrides map[string]any
+		if info.UseRuntimeHeadersOverride {
+			overrides = info.RuntimeHeadersOverride
+		} else if info.ChannelMeta != nil {
+			overrides = info.HeadersOverride
+		}
+		for name := range overrides {
+			if strings.EqualFold(strings.TrimSpace(name), common.CPAStatusHeader) {
+				return
+			}
+		}
+	}
+	headers.Set(common.CPAStatusHeader, "1")
+}
+
 // preparePassThroughRequest preserves the incoming HTTP headers and body. The
 // upstream URL and the channel credential are the only request-level values
 // that are changed here. Header overrides and adaptor defaults are deliberately
@@ -404,6 +430,19 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		}
 		applyHeaderOverrideToRequest(req, headerOverride)
 	}
+	// Negotiate CPA metadata only for text inference, after request construction.
+	// Explicit overrides (including an empty value) and pass-through values win.
+	textInference := false
+	switch info.RelayMode {
+	case constant.RelayModeChatCompletions, constant.RelayModeCompletions,
+		constant.RelayModeResponses, constant.RelayModeResponsesCompact:
+		textInference = true
+	case constant.RelayModeGemini:
+		textInference = strings.HasSuffix(req.URL.Path, ":generateContent") || strings.HasSuffix(req.URL.Path, ":streamGenerateContent")
+	}
+	if textInference && req.Method == http.MethodPost {
+		negotiateCPAStatus(req.Header, info)
+	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
@@ -485,6 +524,10 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		}
 		targetHeader.Set("Content-Type", c.Request.Header.Get("Content-Type"))
 	}
+	if info.RelayMode == constant.RelayModeResponses {
+		negotiateCPAStatus(targetHeader, info)
+	}
+	info.CPAStatusNegotiated = targetHeader.Get(common.CPAStatusHeader) == "1"
 	dialer := *websocket.DefaultDialer
 	if info.ChannelSetting.Proxy != "" {
 		proxyURL, _, proxyErr := common2.ParseProxyURLRuntime(info.ChannelSetting.Proxy)
@@ -606,7 +649,7 @@ func keepUpstreamRedirectResponse(_ *http.Request, _ []*http.Request) error {
 }
 
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
-	info.RecordUpstreamResponse(nil, nil)
+	info.RecordUpstreamResponse(nil)
 	client, err := service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
 	if err != nil {
 		return nil, fmt.Errorf("new proxy http client failed: %w", err)
@@ -656,7 +699,7 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	if resp == nil {
 		return nil, errors.New("resp is nil")
 	}
-	info.RecordUpstreamResponse(resp, c.Request.Header)
+	info.RecordUpstreamResponse(resp)
 	if common2.DebugEnabled {
 		policy := service.NormalizeHTTPTransportPolicy(info.ChannelSetting)
 		logger.LogDebug(c, fmt.Sprintf(

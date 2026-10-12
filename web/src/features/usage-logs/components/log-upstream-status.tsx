@@ -19,8 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 import { useTranslation } from 'react-i18next'
 
 import { StatusBadge, type StatusVariant } from '@/components/status-badge'
-import { toIntlLocale } from '@/i18n/languages'
-import { formatNumber } from '@/lib/format'
 
 import type { LogOtherData } from '../types'
 import { DetailRow } from './dialogs/log-detail-layout'
@@ -56,8 +54,7 @@ export function LogUpstreamStatus(props: { other: LogOtherData | null }) {
 }
 
 export function UpstreamResponseDetails(props: { other: LogOtherData | null }) {
-  const { t, i18n } = useTranslation()
-  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const { t } = useTranslation()
   const other = props.other
   return (
     <>
@@ -71,27 +68,6 @@ export function UpstreamResponseDetails(props: { other: LogOtherData | null }) {
           value={other.upstream_status_code}
           mono
         />
-      )}
-      {other?.upstream_request_status === 'degraded' && (
-        <>
-          <DetailRow
-            label={t('Turn State Source')}
-            value={
-              other.turn_state_source === 'response'
-                ? t('Response header')
-                : t('Request header')
-            }
-          />
-          {other.turn_state_length != null && (
-            <DetailRow
-              label={t('Turn State Length')}
-              value={t('{{length}} bytes', {
-                length: formatNumber(other.turn_state_length, locale),
-              })}
-              mono
-            />
-          )}
-        </>
       )}
     </>
   )

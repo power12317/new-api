@@ -119,15 +119,6 @@ export interface LogOtherData {
   request_reasoning_effort?: string
   upstream_status_code?: number
   upstream_request_status?: 'normal' | 'degraded' | 'error' | 'unknown'
-  turn_state_source?: 'request' | 'response' | 'none'
-  turn_state_length?: number
-  turn_state_verdict?:
-    | 'normal'
-    | 'degraded'
-    | 'unrecognized'
-    | 'missing'
-    | 'multiple'
-  turn_state_rule_version?: number
   admin_info?: {
     request_policy?: PolicyEvent[]
     is_multi_key?: boolean

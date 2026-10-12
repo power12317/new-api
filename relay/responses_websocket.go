@@ -30,6 +30,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/tidwall/gjson"
 )
 
 const responsesWSEventTypeResponseCreate = "response.create"
@@ -64,9 +65,10 @@ type responsesWSErrorEvent struct {
 }
 
 type responsesWSMessage struct {
-	kind int
-	body []byte
-	err  error
+	kind      int
+	body      []byte
+	err       error
+	cpaStatus string
 }
 
 // responsesWSControl is a client control event (response.cancel) whose
@@ -348,7 +350,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				}
 			}
 			s.registerChannelClose(channel.Id)
-			s.startTargetReader(target)
+			s.startTargetReader(target, info.CPAStatusNegotiated)
 			apiErr = nil
 			break
 		}
@@ -380,6 +382,10 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				state.closeAfter = true
 				ConsumeResponsesQuota(c, info, accumulator.Finish())
 				return nil
+			}
+			if incoming.cpaStatus != "" {
+				info.RecordWebSocketCPAStatus(incoming.cpaStatus)
+				continue
 			}
 			info.SetFirstResponseTime()
 			var event struct {
@@ -614,7 +620,32 @@ func buildResponsesWSCreatePayload(c *gin.Context, info *relaycommon.RelayInfo, 
 	return event, nil
 }
 
-func (s *responsesWSSession) startTargetReader(target *websocket.Conn) {
+// A reserved frame must be a text JSON object containing exactly the two
+// protocol fields, with no duplicate keys or extra business data.
+func parseResponsesWSCPAStatus(kind int, body []byte) string {
+	if kind != websocket.TextMessage {
+		return ""
+	}
+	frame := gjson.ParseBytes(body)
+	if frame.Get("type").String() != "cpa.status" {
+		return ""
+	}
+	var metadata map[string]string
+	if common.Unmarshal(body, &metadata) != nil || len(metadata) != 2 || metadata["type"] != "cpa.status" || (metadata["status"] != "normal" && metadata["status"] != "degraded") {
+		return ""
+	}
+	fields := 0
+	frame.ForEach(func(_, _ gjson.Result) bool {
+		fields++
+		return true
+	})
+	if fields != 2 {
+		return ""
+	}
+	return metadata["status"]
+}
+
+func (s *responsesWSSession) startTargetReader(target *websocket.Conn, cpaStatusNegotiated bool) {
 	limit := int64(helper.DefaultMaxScannerBufferSize)
 	if appconstant.StreamScannerMaxBufferMB > 0 {
 		limit = int64(appconstant.StreamScannerMaxBufferMB) << 20
@@ -624,10 +655,16 @@ func (s *responsesWSSession) startTargetReader(target *websocket.Conn) {
 		for {
 			kind, body, err := target.ReadMessage()
 			incoming := responsesWSMessage{kind: kind, body: body, err: err}
+			if cpaStatusNegotiated && err == nil {
+				incoming.cpaStatus = parseResponsesWSCPAStatus(kind, body)
+			}
 			if state := s.getCurrent(); state != nil {
 				select {
 				case state.inbox <- incoming:
 				case <-state.done:
+					if incoming.cpaStatus != "" {
+						continue
+					}
 					if err == nil {
 						if writeErr := s.writeClient(kind, body); writeErr != nil {
 							s.shutdown()
@@ -640,6 +677,9 @@ func (s *responsesWSSession) startTargetReader(target *websocket.Conn) {
 					return
 				}
 			} else if err == nil {
+				if incoming.cpaStatus != "" {
+					continue
+				}
 				if writeErr := s.writeClient(kind, body); writeErr != nil {
 					s.shutdown()
 					return

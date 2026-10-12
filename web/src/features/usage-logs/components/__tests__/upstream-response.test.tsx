@@ -131,8 +131,6 @@ test.each([
     other: {
       upstream_status_code: 200,
       upstream_request_status: 'degraded',
-      turn_state_source: 'response',
-      turn_state_length: 312,
     },
     expected: 'Degraded',
   },
@@ -150,24 +148,6 @@ test.each([
   ).toBeVisible()
 })
 
-test.each([undefined, 0, 292, 332, 17])(
-  'omits turn-state explanations for normal responses with length %s',
-  (length) => {
-    renderLog(
-      {
-        upstream_status_code: 200,
-        upstream_request_status: 'normal',
-        turn_state_length: length,
-        turn_state_source: length === undefined ? 'none' : 'response',
-      },
-      { details: true }
-    )
-    expect(screen.getByText('Normal')).toBeVisible()
-    expect(screen.queryByText('Turn State Source')).not.toBeInTheDocument()
-    expect(screen.queryByText('Turn State Length')).not.toBeInTheDocument()
-  }
-)
-
 test('shows the response model on its own line alongside the degraded status', () => {
   renderLog({
     response_model: {
@@ -177,8 +157,6 @@ test('shows the response model on its own line alongside the degraded status', (
     },
     upstream_status_code: 200,
     upstream_request_status: 'degraded',
-    turn_state_length: 312,
-    turn_state_source: 'response',
   })
   expect(screen.getByText('different-model')).toBeVisible()
   expect(
@@ -191,19 +169,41 @@ test('shows the response model on its own line alongside the degraded status', (
   ).toBeVisible()
 })
 
-test('shows the source and length explaining a degraded response', () => {
-  renderLog(
-    {
-      upstream_status_code: 200,
-      upstream_request_status: 'degraded',
-      turn_state_source: 'request',
-      turn_state_length: 356,
-    },
-    { details: true }
-  )
-  expect(screen.getByText('Degraded')).toBeVisible()
-  expect(screen.getByText('Request header')).toBeVisible()
-  expect(screen.getByText('356 bytes')).toBeVisible()
+test.each(['normal', 'degraded'])(
+  'shows the recorded %s verdict without legacy length, source or rule details',
+  (status) => {
+    renderLog(
+      {
+        upstream_status_code: 200,
+        upstream_request_status: status,
+        turn_state_source: 'request',
+        turn_state_length: 356,
+        turn_state_rule_version: 1,
+        turn_state_verdict: 'degraded',
+      },
+      { details: true }
+    )
+    expect(
+      screen.getByText(status === 'normal' ? 'Normal' : 'Degraded')
+    ).toBeVisible()
+    expect(screen.getByText('Upstream HTTP Status')).toBeVisible()
+    expect(screen.queryByText('Turn State Source')).not.toBeInTheDocument()
+    expect(screen.queryByText('Turn State Length')).not.toBeInTheDocument()
+    expect(screen.queryByText('Request header')).not.toBeInTheDocument()
+    expect(screen.queryByText('356 bytes')).not.toBeInTheDocument()
+  }
+)
+
+test('does not infer degradation from legacy turn-state facts when no status was recorded', () => {
+  renderLog({
+    turn_state_source: 'response',
+    turn_state_length: 312,
+    turn_state_rule_version: 1,
+    turn_state_verdict: 'degraded',
+  })
+  const status = screen.getByRole('cell', { name: 'upstream_status' })
+  expect(within(status).getByText('Not recorded')).toBeVisible()
+  expect(within(status).queryByText('Degraded')).not.toBeInTheDocument()
 })
 
 test('mobile cards show the recorded degraded status', () => {

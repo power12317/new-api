@@ -17,16 +17,8 @@ func AppendUpstreamResponseLogInfo(info *relaycommon.RelayInfo, other *model.Log
 	if response == nil {
 		return
 	}
-	other.SetPublic("upstream_request_status", response.Status)
+	other.SetPublic("upstream_request_status", response.RequestStatus())
 	if response.StatusCode != 0 {
 		other.SetPublic("upstream_status_code", response.StatusCode)
-	}
-	other.SetPublic("turn_state_rule_version", 1)
-	if response.TurnStateSource != "" {
-		other.SetPublic("turn_state_source", response.TurnStateSource)
-		other.SetPublic("turn_state_verdict", response.TurnStateVerdict)
-	}
-	if response.TurnStateLength != nil {
-		other.SetPublic("turn_state_length", *response.TurnStateLength)
 	}
 }
