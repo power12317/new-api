@@ -229,29 +229,56 @@ export function ResponseModelDetails(props: {
           className='h-auto whitespace-normal'
         />
       )}
-      <DetailRow
-        label={t('Request Model')}
-        value={props.observation.requested_model}
-        mono
-      />
+      {[
+        {
+          label: t('Request Model'),
+          value: props.observation.requested_model,
+        },
+        {
+          label: t('Upstream Model'),
+          value:
+            props.observation.upstream_model ||
+            props.observation.requested_model,
+        },
+        {
+          label: t('Response Model'),
+          value: props.observation.returned_model,
+        },
+      ].map((model) => (
+        <DetailRow
+          key={model.label}
+          label={model.label}
+          value={
+            <span className='inline-flex max-w-full items-start gap-1 align-top'>
+              <span className='min-w-0 leading-5 wrap-anywhere'>
+                {model.value || t('Not returned')}
+              </span>
+              {model.value && (
+                <CopyButton
+                  value={model.value}
+                  className='size-5'
+                  iconClassName='size-3'
+                  aria-label={t('Copy {{field}}', { field: model.label })}
+                />
+              )}
+            </span>
+          }
+          mono
+        />
+      ))}
       {props.reasoningEffort && (
         <DetailRow
           label={t('Request Reasoning Effort')}
           value={props.reasoningEffort}
         />
       )}
-      <DetailRow
-        label={t('Upstream Model')}
-        value={
-          props.observation.upstream_model || props.observation.requested_model
-        }
-        mono
-      />
-      <DetailRow
-        label={t('Response Model')}
-        value={props.observation.returned_model || t('Not returned')}
-        mono
-      />
+      {mismatch && (
+        <p className='text-muted-foreground text-xs'>
+          {t(
+            'The upstream returned a model name different from both the requested and upstream models. Aliases or dated versions may also cause this; this warning alone does not prove model substitution.'
+          )}
+        </p>
+      )}
     </div>
   )
 }

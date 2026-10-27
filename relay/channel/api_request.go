@@ -1,18 +1,18 @@
 package channel
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	common2 "github.com/QuantumNous/new-api/common"
-	rootconstant "github.com/QuantumNous/new-api/constant"
+	appconstant "github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/constant"
@@ -22,7 +22,6 @@ import (
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
-	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
@@ -202,10 +201,12 @@ func processHeaderOverride(info *common.RelayInfo, c *gin.Context) (map[string]s
 	}
 
 	headerOverrideSource := common.GetEffectiveHeaderOverride(info)
+	// Background polling has no client request from which to copy headers.
+	hasClientRequest := !info.IsChannelTest && c != nil && c.Request != nil
 
 	passAll := false
 	var passthroughRegex []*regexp.Regexp
-	if !info.IsChannelTest {
+	if hasClientRequest {
 		for k := range headerOverrideSource {
 			key := strings.TrimSpace(strings.ToLower(k))
 			if key == "" {
@@ -238,9 +239,6 @@ func processHeaderOverride(info *common.RelayInfo, c *gin.Context) (map[string]s
 	}
 
 	if passAll || len(passthroughRegex) > 0 {
-		if c == nil || c.Request == nil {
-			return nil, types.NewError(fmt.Errorf("missing request context for header passthrough"), types.ErrorCodeChannelHeaderOverrideInvalid)
-		}
 		for name := range c.Request.Header {
 			if shouldSkipPassthroughHeader(name) {
 				continue
@@ -278,7 +276,7 @@ func processHeaderOverride(info *common.RelayInfo, c *gin.Context) (map[string]s
 		if !ok {
 			return nil, types.NewError(nil, types.ErrorCodeChannelHeaderOverrideInvalid)
 		}
-		if info.IsChannelTest && strings.HasPrefix(strings.TrimSpace(str), clientHeaderPlaceholderPrefix) {
+		if !hasClientRequest && strings.HasPrefix(strings.TrimSpace(str), clientHeaderPlaceholderPrefix) {
 			continue
 		}
 
@@ -299,6 +297,17 @@ func ResolveHeaderOverride(info *common.RelayInfo, c *gin.Context) (map[string]s
 	return processHeaderOverride(info, c)
 }
 
+// ApplyHeaderOverride applies channel overrides after the adaptor's headers.
+// Without a client request, only static values and {api_key} are resolved.
+func ApplyHeaderOverride(info *common.RelayInfo, c *gin.Context, req *http.Request) error {
+	headers, err := processHeaderOverride(info, c)
+	if err != nil {
+		return err
+	}
+	applyHeaderOverrideToRequest(req, headers)
+	return nil
+}
+
 func applyHeaderOverrideToRequest(req *http.Request, headerOverride map[string]string) {
 	if req == nil {
 		return
@@ -313,8 +322,22 @@ func applyHeaderOverrideToRequest(req *http.Request, headerOverride map[string]s
 }
 
 func requestPassThroughEnabled(info *common.RelayInfo) bool {
-	return info != nil && (model_setting.GetGlobalSettings().PassThroughRequestEnabled ||
-		(info.ChannelMeta != nil && info.ChannelSetting.PassThroughBodyEnabled))
+	if info == nil {
+		return false
+	}
+	if model_setting.GetGlobalSettings().PassThroughRequestEnabled ||
+		(info.ChannelMeta != nil && info.ChannelSetting.PassThroughBodyEnabled) {
+		return true
+	}
+	if info.IsChannelTest {
+		return false
+	}
+	for name := range common.GetEffectiveHeaderOverride(info) {
+		if strings.TrimSpace(name) == headerPassthroughAllKey {
+			return true
+		}
+	}
+	return false
 }
 
 // negotiateCPAStatus applies the same opt-in default to HTTP and WebSocket
@@ -325,28 +348,24 @@ func negotiateCPAStatus(headers http.Header, info *common.RelayInfo) {
 			return
 		}
 	}
-	if !requestPassThroughEnabled(info) {
-		// The override resolver omits empty values. An explicitly empty
-		// CPA entry must still suppress this opt-in default.
-		var overrides map[string]any
-		if info.UseRuntimeHeadersOverride {
-			overrides = info.RuntimeHeadersOverride
-		} else if info.ChannelMeta != nil {
-			overrides = info.HeadersOverride
-		}
-		for name := range overrides {
-			if strings.EqualFold(strings.TrimSpace(name), common.CPAStatusHeader) {
-				return
-			}
+	// An explicitly empty override also suppresses the opt-in default.
+	var overrides map[string]any
+	if info.UseRuntimeHeadersOverride {
+		overrides = info.RuntimeHeadersOverride
+	} else if info.ChannelMeta != nil {
+		overrides = info.HeadersOverride
+	}
+	for name := range overrides {
+		if strings.EqualFold(strings.TrimSpace(name), common.CPAStatusHeader) {
+			return
 		}
 	}
 	headers.Set(common.CPAStatusHeader, "1")
 }
 
-// preparePassThroughRequest preserves the incoming HTTP headers and body. The
-// upstream URL and the channel credential are the only request-level values
-// that are changed here. Header overrides and adaptor defaults are deliberately
-// skipped because they would violate pass-through semantics.
+// preparePassThroughRequest preserves client header values, replaces credentials,
+// then applies explicit channel overrides. Passthrough rules must not collapse
+// multi-value headers or restore the client's credential over the channel key.
 func preparePassThroughRequest(req *http.Request, c *gin.Context, info *common.RelayInfo) error {
 	if req == nil || c == nil || c.Request == nil || info == nil || info.ChannelMeta == nil {
 		return fmt.Errorf("missing request context for pass-through")
@@ -377,13 +396,13 @@ func preparePassThroughRequest(req *http.Request, c *gin.Context, info *common.R
 	}
 
 	switch info.ChannelType {
-	case rootconstant.ChannelTypeAzure:
+	case appconstant.ChannelTypeAzure:
 		req.Header.Set("api-key", info.ApiKey)
-	case rootconstant.ChannelTypeAnthropic:
+	case appconstant.ChannelTypeAnthropic:
 		req.Header.Set("x-api-key", info.ApiKey)
-	case rootconstant.ChannelTypeGemini, rootconstant.ChannelTypePaLM:
+	case appconstant.ChannelTypeGemini, appconstant.ChannelTypePaLM:
 		req.Header.Set("x-goog-api-key", info.ApiKey)
-	case rootconstant.ChannelTypeCodex:
+	case appconstant.ChannelTypeCodex:
 		var codexKey struct {
 			AccessToken string `json:"access_token"`
 			AccountID   string `json:"account_id"`
@@ -398,6 +417,21 @@ func preparePassThroughRequest(req *http.Request, c *gin.Context, info *common.R
 	default:
 		req.Header.Set("Authorization", "Bearer "+info.ApiKey)
 	}
+	headers, err := processHeaderOverride(info, c)
+	if err != nil {
+		return err
+	}
+	explicitHeaders := make(map[string]string)
+	for name := range common.GetEffectiveHeaderOverride(info) {
+		if isHeaderPassthroughRuleKey(name) {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(name))
+		if value, exists := headers[key]; exists {
+			explicitHeaders[key] = value
+		}
+	}
+	applyHeaderOverrideToRequest(req, explicitHeaders)
 	return nil
 }
 
@@ -422,13 +456,9 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		if err != nil {
 			return nil, fmt.Errorf("setup request header failed: %w", err)
 		}
-		// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
-		// 这样可以覆盖默认的 Authorization header 设置
-		headerOverride, err := processHeaderOverride(info, c)
-		if err != nil {
+		if err = ApplyHeaderOverride(info, c, req); err != nil {
 			return nil, err
 		}
-		applyHeaderOverrideToRequest(req, headerOverride)
 	}
 	// Negotiate CPA metadata only for text inference, after request construction.
 	// Explicit overrides (including an empty value) and pass-through values win.
@@ -473,13 +503,9 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 		if err != nil {
 			return nil, fmt.Errorf("setup request header failed: %w", err)
 		}
-		// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
-		// 这样可以覆盖默认的 Authorization header 设置
-		headerOverride, err := processHeaderOverride(info, c)
-		if err != nil {
+		if err = ApplyHeaderOverride(info, c, req); err != nil {
 			return nil, err
 		}
-		applyHeaderOverrideToRequest(req, headerOverride)
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
@@ -498,6 +524,9 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
 	fullRequestURL = toWebSocketURL(fullRequestURL)
+	if targetURL, parseErr := url.Parse(fullRequestURL); parseErr == nil {
+		common2.SetContextKey(c, appconstant.ContextKeyUpstreamRequestOrigin, targetURL.Scheme+"://"+targetURL.Host)
+	}
 	targetHeader := http.Header{}
 	if requestPassThroughEnabled(info) {
 		upstreamReq, requestErr := http.NewRequest(c.Request.Method, fullRequestURL, nil)
@@ -513,8 +542,7 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		if err != nil {
 			return nil, fmt.Errorf("setup request header failed: %w", err)
 		}
-		// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
-		// 这样可以覆盖默认的 Authorization header 设置
+		targetHeader.Set("Content-Type", c.Request.Header.Get("Content-Type"))
 		headerOverride, err := processHeaderOverride(info, c)
 		if err != nil {
 			return nil, err
@@ -522,7 +550,11 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		for key, value := range headerOverride {
 			targetHeader.Set(key, value)
 		}
-		targetHeader.Set("Content-Type", c.Request.Header.Get("Content-Type"))
+	}
+	// Each upstream connection needs its own WebSocket handshake. The dialer
+	// regenerates these transport headers and rejects duplicates from the client.
+	for _, name := range []string{"Connection", "Upgrade", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Extensions"} {
+		targetHeader.Del(name)
 	}
 	if info.RelayMode == constant.RelayModeResponses {
 		negotiateCPAStatus(targetHeader, info)
@@ -535,6 +567,9 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 			return nil, proxyErr
 		}
 		dialer.Proxy = http.ProxyURL(proxyURL)
+	}
+	if info.ChannelSetting.TLSInsecureSkipVerify {
+		dialer.TLSClientConfig = common2.InsecureTLSConfig
 	}
 	targetConn, resp, err := dialer.DialContext(c.Request.Context(), fullRequestURL, targetHeader)
 	if err != nil {
@@ -563,81 +598,6 @@ func toWebSocketURL(raw string) string {
 	}
 }
 
-func startPingKeepAlive(c *gin.Context, pingInterval time.Duration) (context.CancelFunc, <-chan struct{}) {
-	pingerCtx, stopPinger := context.WithCancel(context.Background())
-	done := make(chan struct{})
-
-	gopool.Go(func() {
-		defer close(done)
-		defer func() {
-			// 增加panic恢复处理
-			if r := recover(); r != nil {
-				logger.LogDebug(c, "SSE ping goroutine panic recovered: %v", r)
-			}
-			logger.LogDebug(c, "SSE ping goroutine stopped")
-		}()
-
-		if pingInterval <= 0 {
-			pingInterval = helper.DefaultPingInterval
-		}
-
-		ticker := time.NewTicker(pingInterval)
-		// 确保在任何情况下都清理ticker
-		defer func() {
-			ticker.Stop()
-			logger.LogDebug(c, "SSE ping ticker stopped")
-		}()
-
-		var pingMutex sync.Mutex
-		logger.LogDebug(c, "SSE ping goroutine started")
-
-		// 增加超时控制，防止goroutine长时间运行
-		maxPingDuration := 120 * time.Minute // 最大ping持续时间
-		pingTimeout := time.NewTimer(maxPingDuration)
-		defer pingTimeout.Stop()
-
-		for {
-			select {
-			// 发送 ping 数据
-			case <-ticker.C:
-				if err := sendPingData(c, &pingMutex); err != nil {
-					logger.LogDebug(c, "SSE ping error, stopping goroutine: %s", err.Error())
-					return
-				}
-			// 收到退出信号
-			case <-pingerCtx.Done():
-				return
-			// request 结束
-			case <-c.Request.Context().Done():
-				return
-			// 超时保护，防止goroutine无限运行
-			case <-pingTimeout.C:
-				logger.LogDebug(c, "SSE ping goroutine timeout, stopping")
-				return
-			}
-		}
-	})
-
-	return stopPinger, done
-}
-
-func sendPingData(c *gin.Context, mutex *sync.Mutex) error {
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	// Bound the write so a slow client cannot block this goroutine forever;
-	// doRequest's defer waits for the pinger to exit before returning.
-	helper.ExtendWriteDeadline(c)
-	err := helper.PingData(c)
-	if err != nil {
-		logger.LogError(c, "SSE ping error: "+err.Error())
-		return err
-	}
-
-	logger.LogDebug(c, "SSE ping data sent")
-	return nil
-}
-
 func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	return doRequest(c, req, info)
 }
@@ -662,38 +622,28 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	relayClient.CheckRedirect = keepUpstreamRedirectResponse
 	if common2.DebugEnabled && req != nil && req.URL != nil {
 		policy := service.NormalizeHTTPTransportPolicy(info.ChannelSetting)
-		logger.LogDebug(c, fmt.Sprintf(
-			"http transport select: host=%s protocol=%s shards=%d policy=%s",
+		logger.LogDebug(c, "http transport select: host=%s protocol=%s shards=%d policy=%s",
 			req.URL.Host,
 			policy.Protocol,
 			policy.Shards,
-			policy.String(),
-		))
+			policy.String())
 	}
 
-	var stopPinger context.CancelFunc
-	var pingerDone <-chan struct{}
 	if info.IsStream {
 		helper.SetEventStreamHeaders(c)
 		// 处理流式请求的 ping 保活
 		generalSettings := operation_setting.GetGeneralSetting()
 		if generalSettings.PingIntervalEnabled && !info.DisablePing {
 			pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
-			stopPinger, pingerDone = startPingKeepAlive(c, pingInterval)
-			// 使用defer确保在任何情况下都能停止ping goroutine
-			defer func() {
-				if stopPinger != nil {
-					stopPinger()
-					<-pingerDone
-					logger.LogDebug(c, "SSE ping goroutine stopped by defer")
-				}
-			}()
+			stopPinger := helper.StartStreamKeepAlive(c, pingInterval)
+			defer stopPinger()
 		}
 	}
 
+	common2.SetContextKey(c, appconstant.ContextKeyUpstreamRequestOrigin, req.URL.Scheme+"://"+req.URL.Host)
 	resp, err := relayClient.Do(req)
 	if err != nil {
-		logger.LogError(c, "do request failed: "+err.Error())
+		logger.LogError(c, common2.LogText("do request failed: %s", err.Error()))
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
 	if resp == nil {
@@ -702,14 +652,12 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	info.RecordUpstreamResponse(resp)
 	if common2.DebugEnabled {
 		policy := service.NormalizeHTTPTransportPolicy(info.ChannelSetting)
-		logger.LogDebug(c, fmt.Sprintf(
-			"http transport negotiated: host=%s protocol=%s shards=%d policy=%s negotiated=%s",
+		logger.LogDebug(c, "http transport negotiated: host=%s protocol=%s shards=%d policy=%s negotiated=%s",
 			req.URL.Host,
 			policy.Protocol,
 			policy.Shards,
 			policy.String(),
-			resp.Proto,
-		))
+			resp.Proto)
 	}
 
 	if upID := resp.Header.Get(common2.RequestIdKey); upID != "" {
@@ -743,6 +691,9 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	err = a.BuildRequestHeader(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
+	}
+	if err = ApplyHeaderOverride(info, c, req); err != nil {
+		return nil, err
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {

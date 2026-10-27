@@ -396,6 +396,8 @@ docker run --name new-api -d --restart always \
 
 📖 [Tutoriel avec des images](./docs/BT.md)
 
+Lisez [AGENTS.md](./AGENTS.md) avant de contribuer. Exécutez les vérifications adaptées : `make test` pour les modules Go ; `bun check -b`, `bun run lint`, `bun run test` et `bun run build` dans `web/` pour le frontend. Une modification de RelayKit nécessite aussi `GOWORK=off go build ./...` depuis `relaykit/`.
+
 </details>
 
 ### ⚠️ Considérations sur le déploiement multi-machines

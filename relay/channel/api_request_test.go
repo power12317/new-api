@@ -2,17 +2,178 @@ package channel
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type headerRelayAdaptor struct {
+	Adaptor
+	url string
+}
+
+func (a headerRelayAdaptor) GetRequestURL(_ *relaycommon.RelayInfo) (string, error) {
+	return a.url, nil
+}
+
+func (a headerRelayAdaptor) SetupRequestHeader(_ *gin.Context, headers *http.Header, info *relaycommon.RelayInfo) error {
+	headers.Set("Authorization", "Bearer "+info.ApiKey)
+	headers.Set("X-Adaptor-Default", "default")
+	return nil
+}
+
+func TestRelayHeaderPassthroughPreservesHeadersAndAppliesOverrides(t *testing.T) {
+	service.InitHttpClient()
+	for _, tc := range []struct {
+		name              string
+		bodyPassthrough   bool
+		headerPassthrough bool
+		form              bool
+		authorization     string
+	}{
+		{name: "headers without body passthrough", headerPassthrough: true},
+		{name: "body and header passthrough", bodyPassthrough: true, headerPassthrough: true},
+		{name: "existing body passthrough", bodyPassthrough: true},
+		{name: "multipart passthrough", bodyPassthrough: true, headerPassthrough: true, form: true},
+		{name: "explicit credential override", headerPassthrough: true, authorization: "Custom {api_key}"},
+		{name: "ordinary request"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			type observedRequest struct {
+				headers http.Header
+				body    string
+				err     error
+			}
+			received := make(chan observedRequest, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				received <- observedRequest{headers: r.Header.Clone(), body: string(body), err: err}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+			const payload = "{\n  \"model\": \"example\", \"extra\": {\"b\": false, \"a\": 0}\n}"
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/example", strings.NewReader(payload))
+			ctx.Request.Header = http.Header{
+				"Authorization": {"Bearer client-token"},
+				"Api-Key":       {"client-azure-key"},
+				"X-Api-Key":     {"client-anthropic-key"},
+				"Content-Type":  {"application/json; charset=utf-8"},
+				"User-Agent":    {"client-agent"},
+				"X-Multi":       {"first", "second"},
+				"X-Trace":       {"original"},
+				"Cookie":        {"client-setting=kept"},
+			}
+			if tc.form {
+				ctx.Request.Header.Set("Content-Type", "multipart/form-data; boundary=original-boundary")
+			}
+			originalHeaders := ctx.Request.Header.Clone()
+			overrides := map[string]any{
+				"X-Trace":        "overridden",
+				"X-Upstream-Key": "{api_key}",
+				"X-Client":       "{client_header:X-Trace}",
+			}
+			if tc.headerPassthrough {
+				overrides["*"] = true
+				overrides["re:^x-multi$"] = true
+			}
+			if tc.authorization != "" {
+				overrides["Authorization"] = tc.authorization
+			}
+			info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+				ChannelType:     constant.ChannelTypeOpenAI,
+				ApiKey:          "upstream-key",
+				HeadersOverride: overrides,
+			}}
+			info.ChannelSetting.PassThroughBodyEnabled = tc.bodyPassthrough
+			adaptor := headerRelayAdaptor{url: server.URL}
+			var response *http.Response
+			var err error
+			if tc.form {
+				response, err = DoFormRequest(adaptor, ctx, info, strings.NewReader(payload))
+			} else {
+				response, err = DoApiRequest(adaptor, ctx, info, strings.NewReader(payload))
+			}
+			require.NoError(t, err)
+			require.NoError(t, response.Body.Close())
+			request := <-received
+			require.NoError(t, request.err)
+			assert.Equal(t, payload, request.body)
+			assert.Equal(t, "overridden", request.headers.Get("X-Trace"))
+			assert.Equal(t, "upstream-key", request.headers.Get("X-Upstream-Key"))
+			assert.Equal(t, "original", request.headers.Get("X-Client"))
+			wantAuthorization := "Bearer upstream-key"
+			if tc.authorization != "" {
+				wantAuthorization = "Custom upstream-key"
+			}
+			assert.Equal(t, wantAuthorization, request.headers.Get("Authorization"))
+			assert.Empty(t, request.headers.Get("Api-Key"))
+			assert.Empty(t, request.headers.Get("X-Api-Key"))
+			if tc.bodyPassthrough || tc.headerPassthrough {
+				for _, name := range []string{"X-Multi", "User-Agent", "Content-Type", "Cookie"} {
+					assert.Equal(t, originalHeaders.Values(name), request.headers.Values(name), name)
+				}
+				assert.Empty(t, request.headers.Get("X-Adaptor-Default"))
+			} else {
+				assert.Empty(t, request.headers.Get("X-Multi"))
+				assert.Equal(t, "default", request.headers.Get("X-Adaptor-Default"))
+			}
+			assert.Equal(t, originalHeaders, ctx.Request.Header, "upstream overrides must not mutate the client headers")
+		})
+	}
+}
+
+func TestWebSocketHeaderPassthroughPreservesHeadersAndRebuildsHandshake(t *testing.T) {
+	received := make(chan http.Header, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- r.Header.Clone()
+		upgrader := websocket.Upgrader{}
+		connection, err := upgrader.Upgrade(w, r, nil)
+		if err == nil {
+			_ = connection.Close()
+		}
+	}))
+	defer server.Close()
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	ctx.Request.Header = http.Header{
+		"Authorization":            {"Bearer client-token"},
+		"X-Multi":                  {"first", "second"},
+		"X-Trace":                  {"original"},
+		"Connection":               {"Upgrade"},
+		"Upgrade":                  {"websocket"},
+		"Sec-Websocket-Key":        {"client-handshake-key"},
+		"Sec-Websocket-Version":    {"13"},
+		"Sec-Websocket-Extensions": {"permessage-deflate"},
+	}
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+		ChannelType: constant.ChannelTypeOpenAI,
+		ApiKey:      "upstream-key",
+		HeadersOverride: map[string]any{
+			"*":       true,
+			"X-Trace": "overridden",
+		},
+	}}
+	connection, err := DoWssRequest(headerRelayAdaptor{url: server.URL}, ctx, info, nil)
+	require.NoError(t, err)
+	require.NoError(t, connection.Close())
+	headers := <-received
+	assert.Equal(t, []string{"first", "second"}, headers.Values("X-Multi"))
+	assert.Equal(t, "Bearer upstream-key", headers.Get("Authorization"))
+	assert.Equal(t, "overridden", headers.Get("X-Trace"))
+	assert.NotEqual(t, "client-handshake-key", headers.Get("Sec-Websocket-Key"))
+}
 
 func TestNewTaskAPIRequestInheritsClientCancellation(t *testing.T) {
 	recorder := httptest.NewRecorder()

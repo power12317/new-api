@@ -26,7 +26,7 @@ import {
 } from '@/features/channels/lib/model-categories'
 import { getLobeIconNames } from '@/lib/lobe-icon'
 
-import { ModelBadge } from '../model-badge'
+import { ModelBadge, ResponseModelDetails } from '../model-badge'
 
 const providers = [
   {
@@ -200,6 +200,9 @@ const providers = [
       'llama2',
       'llama3',
       'meta-custom',
+      'meta/muse-spark-1.3-contributor',
+      'muse-spark-1.3',
+      'meta/muse-spark-1.2',
     ],
   },
   {
@@ -400,6 +403,31 @@ it.each([false, true])(
     expect(screen.queryByText('Response Model')).not.toBeInTheDocument()
   }
 )
+
+it('keeps request effort and the missing response label while copying recorded model names', async () => {
+  const user = userEvent.setup()
+  const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()
+  render(
+    <ResponseModelDetails
+      observation={{
+        requested_model: 'client-alias',
+        upstream_model: 'mapped-model',
+        returned_model: '',
+      }}
+      reasoningEffort='high'
+    />
+  )
+  expect(screen.getByText('Not returned')).toBeVisible()
+  expect(screen.getByText('Request Reasoning Effort')).toBeVisible()
+  expect(screen.getByText('high')).toBeVisible()
+  expect(
+    screen.queryByRole('button', { name: 'Copy Response Model' })
+  ).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Copy Request Model' }))
+  expect(copy).toHaveBeenLastCalledWith('client-alias')
+  await user.click(screen.getByRole('button', { name: 'Copy Upstream Model' }))
+  expect(copy).toHaveBeenLastCalledWith('mapped-model')
+})
 
 it('keeps mapped model details available when the response matches the upstream model', async () => {
   const user = userEvent.setup()

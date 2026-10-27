@@ -21,9 +21,12 @@ import { useTranslation } from 'react-i18next'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
 
+import { CHANNEL_TYPE_ADVANCED_CUSTOM } from '../../lib/advanced-custom'
+
 export type PassthroughKind = 'body' | 'headers'
 
 type PassthroughWarningDialogProps = {
+  channelType: number
   open: boolean
   /** Which passthrough option is about to be enabled. */
   kind: PassthroughKind | null
@@ -54,7 +57,7 @@ export function PassthroughWarningDialog(props: PassthroughWarningDialogProps) {
         'After enabling, the original request body is forwarded to the upstream without gateway rewriting:'
       )
     : t(
-        'After enabling, client request headers are forwarded to the upstream, excluding standard authentication headers, cookies and transport headers:'
+        'Client request headers are preserved. The channel key replaces client credentials, and Request Header Override takes priority:'
       )
   const effects = isBody
     ? [
@@ -93,6 +96,13 @@ export function PassthroughWarningDialog(props: PassthroughWarningDialogProps) {
               <li key={item}>{item}</li>
             ))}
           </ul>
+          {isBody && props.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM && (
+            <p>
+              {t(
+                'Channel-level body passthrough applies to all routes. Requests to routes that require format conversion will fail. To enable passthrough for selected routes only, use the route-level switches instead.'
+              )}
+            </p>
+          )}
           <p className='text-foreground font-medium'>
             {t('Make sure you understand these effects before enabling.')}
           </p>
