@@ -329,6 +329,29 @@ func TestUserAuthAppliesAccessTokenRouteRules(t *testing.T) {
 	router.GET("/api/undeclared", UserAuth(), ok)
 	router.GET("/api/channel/", AdminAuth(), RequirePermission(authz.ChannelRead), ok)
 	router.GET("/api/pricing", TryUserAuth(), ok)
+	router.GET("/api/models/channel_connections", AdminAuth(), ok)
+	router.PUT("/api/models/channel_status", AdminAuth(), ok)
+	modelRead, _ := createMiddlewareScopedToken(t, admin.Id, 0, "model:read")
+	modelWrite, _ := createMiddlewareScopedToken(t, admin.Id, 0, "model:write")
+	ordinary := createMiddlewarePATUser(t, "model-channel-ordinary", "ordinary-legacy")
+	ordinaryWrite, _ := createMiddlewareScopedToken(t, ordinary.Id, 0, "model:write")
+	for _, test := range []struct {
+		method, path, token string
+		status              int
+	}{
+		{"GET", "/api/models/channel_connections", modelRead, http.StatusOK},
+		{"GET", "/api/models/channel_connections", profile, http.StatusForbidden},
+		{"PUT", "/api/models/channel_status", modelRead, http.StatusForbidden},
+		{"PUT", "/api/models/channel_status", modelWrite, http.StatusOK},
+		{"PUT", "/api/models/channel_status", ordinaryWrite, http.StatusForbidden},
+		{"PUT", "/api/models/channel_status", expired, http.StatusUnauthorized},
+	} {
+		request := httptest.NewRequest(test.method, test.path, nil)
+		request.Header.Set("Authorization", "Bearer "+test.token)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		assert.Equal(t, test.status, response.Code, response.Body.String())
+	}
 
 	for _, test := range []struct {
 		name, path, token, code, reason string

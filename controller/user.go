@@ -642,10 +642,15 @@ func GetUserModels(c *gin.Context) {
 			groupsToQuery = []string{group}
 		}
 	}
+	names, err := service.FilterInvocableModelNames(c.Request.Context(), service.GetGroupsEnabledModels(groupsToQuery), groupsToQuery)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    service.GetGroupsEnabledModels(groupsToQuery),
+		"data":    names,
 	})
 }
 

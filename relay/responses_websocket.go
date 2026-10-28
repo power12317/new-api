@@ -555,6 +555,9 @@ func responsesWSErrorEndsRequest(event responsesWSErrorEvent, streamID, response
 }
 
 func (s *responsesWSSession) restoreConnectionContext(c *gin.Context, model string) *types.NewAPIError {
+	if apiErr := service.CheckModelChannelAllowed(c.Request.Context(), s.lockedChannelID, model); apiErr != nil {
+		return apiErr
+	}
 	// The channel type is not rechecked: a locked channel keeps its type, and
 	// the FilterResponsesWebSocket rules were applied when it was selected.
 	channel, err := appmodel.CacheGetChannel(s.lockedChannelID)

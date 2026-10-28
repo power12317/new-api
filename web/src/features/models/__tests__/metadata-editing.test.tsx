@@ -80,6 +80,9 @@ describe('model pricing entry', () => {
     const channelModel = { ...model, id: 0, model_name: 'channel-only' }
     let storedPrice = 1.5
     const get = vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/models/channel_connections') {
+        return { data: { success: true, data: [] } }
+      }
       if (url === '/api/option/model_pricing') {
         return {
           data: {
@@ -140,8 +143,8 @@ describe('model pricing entry', () => {
     expect(put).not.toHaveBeenCalled()
     await user.click(screen.getByRole('tab', { name: 'Channels and groups' }))
     expect(
-      screen.getByText(
-        'Channel availability and group access are derived from enabled channels. Importing metadata does not create a callable channel.'
+      await screen.findByText(
+        'Choose which channels can serve this model. Changes save immediately and do not affect other models on the channel. If all eligible channels are disabled, new requests return a model disabled error.'
       )
     ).toBeVisible()
     expect(get).not.toHaveBeenCalledWith('/api/models/0')
@@ -157,6 +160,9 @@ describe('model pricing entry', () => {
       }
     )
     vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/models/channel_connections') {
+        return { data: { success: true, data: [] } }
+      }
       if (url === '/api/models/7') return detail
       if (url === '/api/option/model_pricing') {
         return {
@@ -249,6 +255,9 @@ describe('model pricing entry', () => {
       matched_models: ['example-concrete'],
     }
     const get = vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/models/channel_connections') {
+        return { data: { success: true, data: [] } }
+      }
       if (url === '/api/models/7') {
         return { data: { success: true, data: matchedModel } }
       }
@@ -391,6 +400,9 @@ describe('metadata editing', () => {
         }
       )
       const get = vi.spyOn(api, 'get').mockImplementation(async (url) => {
+        if (url === '/api/models/channel_connections') {
+          return { data: { success: true, data: [] } }
+        }
         if (url === '/api/models/7') {
           return { data: { success: true, data: model } }
         }
@@ -468,6 +480,9 @@ describe('metadata editing', () => {
   it('allows an administrator to save metadata without loading or changing system pricing', async () => {
     useAuthStore.getState().auth.setUser({ id: 2, username: 'admin', role: 10 })
     const get = vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/models/channel_connections') {
+        return { data: { success: true, data: [] } }
+      }
       if (url === '/api/models/7') {
         return { data: { success: true, data: model } }
       }
@@ -549,6 +564,9 @@ describe('metadata editing', () => {
     let version = 'v1'
     let storedPrice = 1.5
     const get = vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/models/channel_connections') {
+        return { data: { success: true, data: [] } }
+      }
       if (url === '/api/models/7') {
         return { data: { success: true, data: model } }
       }

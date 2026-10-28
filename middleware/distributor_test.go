@@ -203,6 +203,7 @@ func TestTokenModelLimitAllowsExemptAtNameByFullName(t *testing.T) {
 }
 
 func TestDistributeHidesTaskPluginDetailsButLogsDiagnostics(t *testing.T) {
+	setupTaskPluginRouteDB(t)
 	require.NoError(t, i18n.Init())
 	previousCacheEnabled := common.MemoryCacheEnabled
 	common.MemoryCacheEnabled = true

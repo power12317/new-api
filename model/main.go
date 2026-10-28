@@ -358,6 +358,7 @@ func migrateDB() error {
 		&Task{},
 		&TaskPlugin{},
 		&Model{},
+		&ModelChannelDisable{},
 		&Vendor{},
 		&PrefillGroup{},
 		&Setup{},

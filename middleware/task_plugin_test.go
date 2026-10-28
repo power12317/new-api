@@ -1992,7 +1992,7 @@ func setupTaskPluginRouteDB(t *testing.T) {
 	previousType := common.MainDatabaseType()
 	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(&model.Task{}))
+	require.NoError(t, database.AutoMigrate(&model.ModelChannelDisable{}, &model.Task{}))
 	model.DB = database
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
 	t.Cleanup(func() {
@@ -2077,7 +2077,7 @@ func TestRouteTaskPluginEndpointUsesSelectedChannel(t *testing.T) {
 			// Every table belongs to this run, including when a developer points
 			// a test DSN at a database shared with another test suite.
 			database.Config.NamingStrategy = schema.NamingStrategy{TablePrefix: "endpoint_route_" + common.GetUUID() + "_"}
-			require.NoError(t, database.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.Task{}))
+			require.NoError(t, database.AutoMigrate(&model.ModelChannelDisable{}, &model.Channel{}, &model.Ability{}, &model.Task{}))
 			t.Cleanup(func() {
 				for _, table := range []any{&model.Ability{}, &model.Channel{}, &model.Task{}} {
 					require.NoError(t, database.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(table).Error)

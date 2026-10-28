@@ -40,9 +40,11 @@ const (
 	FilterTaskPluginEndpoint ChannelFilterKind = "task_plugin_endpoint"
 	FilterTaskPluginIdentity ChannelFilterKind = "task_plugin_identity"
 	FilterResponsesWebSocket ChannelFilterKind = "responses_websocket"
+	FilterModelChannelState  ChannelFilterKind = "model_channel_state"
 )
 
 type ChannelFilter struct {
+	DisabledChannelIDs     []int
 	Kind                   ChannelFilterKind
 	RequestPath            string
 	TaskPluginKey          string

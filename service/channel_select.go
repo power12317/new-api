@@ -281,6 +281,9 @@ type ChannelSelectError struct {
 // filters. The group the channel was chosen from is returned for auto-group
 // callers. The caller still applies SetupContextForSelectedChannel.
 func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam) (*model.Channel, string, *ChannelSelectError) {
+	if policyErr := ApplyModelChannelPolicy(c, modelName); policyErr != nil {
+		return nil, "", policyErr
+	}
 	constraints := GetChannelConstraints(c)
 	if pin, found, overridden := constraints.ResolvedPin(); found {
 		for _, lost := range overridden {
@@ -297,6 +300,9 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			return nil, "", pinnedChannelUnavailable(pin, http.StatusForbidden, i18n.MsgDistributorChannelDisabled)
 		}
 		if ok, kind := model.ChannelSatisfiesFilters(channel, modelName, constraints.Filters); !ok {
+			if kind == dto.FilterModelChannelState {
+				return nil, "", &ChannelSelectError{StatusCode: http.StatusForbidden, Code: ModelChannelDisabledCode, Message: ModelChannelDisabledMessage}
+			}
 			return nil, "", &ChannelSelectError{
 				StatusCode: http.StatusBadRequest, Code: types.ErrorCode(kind), MessageID: i18n.MsgDistributorNoAvailableChannel,
 				Params:     map[string]any{"Group": common.GetContextKeyString(c, constant.ContextKeyUsingGroup), "Model": modelName},
@@ -314,8 +320,9 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			affinityUsable := false
 			preferred, err := model.CacheGetChannel(preferredChannelID)
 			affinitySatisfied := false
+			var rejectedBy dto.ChannelFilterKind
 			if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled {
-				affinitySatisfied, _ = model.ChannelSatisfiesFilters(preferred, modelName, constraints.Filters)
+				affinitySatisfied, rejectedBy = model.ChannelSatisfiesFilters(preferred, modelName, constraints.Filters)
 			}
 			if affinitySatisfied {
 				if usingGroup == "auto" {
@@ -340,7 +347,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			if !affinityUsable && !ShouldKeepChannelAffinityOnChannelDisabled() {
 				ClearCurrentChannelAffinityCache(c)
 			}
-			if !affinityUsable && RequestPolicy(c).SessionMode == "strict" {
+			if !affinityUsable && rejectedBy != dto.FilterModelChannelState && RequestPolicy(c).SessionMode == "strict" {
 				return nil, "", &ChannelSelectError{StatusCode: http.StatusServiceUnavailable, Message: "strict_session_binding_unavailable"}
 			}
 		}
@@ -360,6 +367,9 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			}
 		}
 		if channel == nil {
+			if denial := ModelChannelDenial(c, modelName, usingGroup); denial != nil {
+				return nil, selectGroup, denial
+			}
 			return nil, selectGroup, &ChannelSelectError{
 				StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, MessageID: i18n.MsgDistributorNoAvailableChannel,
 				Params: map[string]any{"Group": usingGroup, "Model": modelName}, NoAvailableChannel: true,

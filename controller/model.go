@@ -249,6 +249,11 @@ func ListModels(c *gin.Context, modelType int) {
 		}
 	}
 	models := service.GetGroupsEnabledModels(ownerGroups)
+	models, err = service.FilterInvocableModelNames(c.Request.Context(), models, ownerGroups)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	for _, modelName := range models {
 		if modelLimitEnable {
 			matchingName := ratio_setting.RoutingMatchModelName(modelName)

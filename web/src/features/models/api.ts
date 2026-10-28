@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
+import { createServerError } from '@/lib/server-error-message'
 
 import type {
   GetModelsParams,
@@ -25,6 +26,7 @@ import type {
   GetVendorsResponse,
   GetVendorResponse,
   Model,
+  ModelChannelConnection,
   Vendor,
   SearchModelsParams,
   SyncUpstreamResponse,
@@ -105,6 +107,38 @@ export async function updateModelStatus(
 ): Promise<{ success: boolean; message?: string }> {
   const res = await api.put('/api/models/?status_only=true', { id, status })
   return res.data
+}
+
+export async function getModelChannelConnections(
+  model: Pick<Model, 'model_name' | 'name_rule'>
+): Promise<ModelChannelConnection[]> {
+  const response = await api.get('/api/models/channel_connections', {
+    params: {
+      model_name: model.model_name,
+      name_rule: model.name_rule,
+    },
+  })
+  if (!response.data.success) {
+    throw createServerError(response.data, 'Failed to load model channels')
+  }
+  return response.data.data
+}
+
+export async function setModelChannelStatus(
+  connection: ModelChannelConnection,
+  enabled: boolean
+): Promise<void> {
+  const response = await api.put('/api/models/channel_status', {
+    channel_id: connection.channel_id,
+    model_name: connection.model_name,
+    enabled,
+  })
+  if (!response.data.success) {
+    throw createServerError(
+      response.data,
+      'Failed to update model channel status'
+    )
+  }
 }
 
 /**

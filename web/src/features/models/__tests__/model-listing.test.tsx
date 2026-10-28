@@ -127,6 +127,9 @@ async function renderList(
 ) {
   useAuthStore.getState().auth.setUser({ id: 1, username: 'admin', role: 100 })
   const get = vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    if (url === '/api/models/channel_connections') {
+      return { data: { success: true, data: [] } }
+    }
     if (url === '/api/models/' || url === '/api/models/search') {
       return {
         data: {
@@ -253,7 +256,7 @@ it('requests channel models and distinguishes catalog policy from availability u
   await user.click(screen.getByRole('button', { name: 'catalog-only' }))
   await user.click(screen.getByRole('tab', { name: 'Channels and groups' }))
   expect(
-    screen.getByText(
+    await screen.findByText(
       'No channel is configured. This model will not appear in the model square.'
     )
   ).toBeVisible()
@@ -377,7 +380,7 @@ it('keeps prices and channel explanations readable in the mobile card and detail
   await user.click(screen.getByRole('button', { name: 'catalog-only' }))
   await user.click(screen.getByRole('tab', { name: 'Channels and groups' }))
   expect(
-    screen.getByText(
+    await screen.findByText(
       'No channel is configured. This model will not appear in the model square.'
     )
   ).toBeVisible()

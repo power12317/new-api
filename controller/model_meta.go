@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"net/http"
 	"sort"
 	"strconv"
@@ -11,6 +12,39 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func GetModelChannelConnections(c *gin.Context) {
+	name := c.Query("model_name")
+	rule, err := strconv.Atoi(c.DefaultQuery("name_rule", "0"))
+	if name == "" || err != nil || rule < model.NameRuleExact || rule > model.NameRuleSuffix {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	connections, err := model.GetModelChannelConnections(c.Request.Context(), name, rule)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, connections)
+}
+
+func SetModelChannelStatus(c *gin.Context) {
+	var request struct {
+		ChannelID int    `json:"channel_id"`
+		ModelName string `json:"model_name"`
+		Enabled   *bool  `json:"enabled"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil || request.Enabled == nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if err := model.SetModelChannelDisabled(c.Request.Context(), request.ChannelID, request.ModelName, !*request.Enabled); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "model.channel_status", map[string]any{"channel_id": request.ChannelID, "model_name": request.ModelName, "enabled": *request.Enabled})
+	common.ApiSuccess(c, nil)
+}
 
 // GetAllModelsMeta 获取模型列表（分页）
 func GetAllModelsMeta(c *gin.Context) {
@@ -271,6 +305,17 @@ func enrichModels(models []*model.Model) error {
 	if err != nil {
 		return err
 	}
+	policy, err := model.LoadModelChannelPolicy(context.Background())
+	if err != nil {
+		return err
+	}
+	active := make([]model.ModelConnection, 0, len(connections))
+	for _, connection := range connections {
+		if !policy.Blocks(connection.ChannelId, connection.Model) {
+			active = append(active, connection)
+		}
+	}
+	connections = active
 	if err := model.FillModelSquareStates(models, configured, connections); err != nil {
 		return err
 	}

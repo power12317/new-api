@@ -311,11 +311,17 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		service.RequestPolicy(c).BeginAttempt(channel, info.UsingGroup)
 		return channel, nil
 	}
+	if policyErr := service.ApplyModelChannelPolicy(c, info.OriginModelName); policyErr != nil {
+		return nil, types.NewErrorWithStatusCode(errors.New(policyErr.Message), policyErr.Code, policyErr.StatusCode, types.ErrOptionWithSkipRetry())
+	}
 	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
 	if err != nil {
 		return nil, types.NewError(errors.New(i18n.T(c, i18n.MsgRelayRetryGetChannelFailed, map[string]any{"Group": selectGroup, "Model": info.OriginModelName, "Error": err.Error()})), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 	if channel == nil {
+		if denial := service.ModelChannelDenial(c, info.OriginModelName, retryParam.TokenGroup); denial != nil {
+			return nil, types.NewErrorWithStatusCode(errors.New(denial.Message), denial.Code, denial.StatusCode, types.ErrOptionWithSkipRetry())
+		}
 		return nil, types.NewError(errors.New(i18n.T(c, i18n.MsgRelayRetryNoAvailableChannel, map[string]any{"Group": selectGroup, "Model": info.OriginModelName})), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 

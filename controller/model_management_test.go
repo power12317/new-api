@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	appdto "github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
@@ -64,7 +67,7 @@ func modelManagementDB(t *testing.T, kind, dsn string) *gorm.DB {
 	require.NoError(t, model.InitDB())
 	database = model.DB
 	model.LOG_DB = database
-	require.NoError(t, database.AutoMigrate(&model.Model{}, &model.Vendor{}, &model.Channel{}, &model.Ability{}, &model.Option{}, &model.User{}, &model.AuditLog{}))
+	require.NoError(t, database.AutoMigrate(&model.Model{}, &model.Vendor{}, &model.Channel{}, &model.Ability{}, &model.Option{}, &model.User{}, &model.AuditLog{}, &model.ModelChannelDisable{}))
 	for _, value := range restoreRatios {
 		require.NoError(t, value.restore("{}"))
 	}
@@ -1701,6 +1704,158 @@ export function parseTaskResult(){return {};}
 			require.NoError(t, err)
 			assert.Empty(t, final.Entries[0].Configured)
 			assert.Equal(t, "{}", final.Options[billing_setting.PluginBillingExprOption])
+		})
+	}
+}
+
+func TestModelChannelDisableDatabaseMatrix(t *testing.T) {
+	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
+		t.Run(dialect.kind, func(t *testing.T) {
+			if dialect.env != "" && os.Getenv(dialect.env) == "" {
+				t.Skip("set " + dialect.env)
+			}
+			db := modelManagementDB(t, dialect.kind, os.Getenv(dialect.env))
+			ctx := context.Background()
+			high := &model.Channel{Name: "Primary", Type: 1, Status: 1, Key: "test-key", Models: "example-model,other-model,alias", Group: "default", Priority: common.GetPointer(int64(10)), ModelMapping: common.GetPointer(`{"alias":"example-model"}`)}
+			low := &model.Channel{Name: "Fallback", Type: 1, Status: 1, Key: "test-key", Models: "example-model,other-model", Group: "default", Priority: common.GetPointer(int64(0))}
+			for _, ch := range []*model.Channel{high, low} {
+				require.NoError(t, ch.Insert())
+			}
+			// Upgrade the previous schema, then run migration twice with persisted policy.
+			require.NoError(t, db.Migrator().DropTable(&model.ModelChannelDisable{}))
+			require.NoError(t, db.AutoMigrate(&model.ModelChannelDisable{}))
+			var response struct {
+				Success bool `json:"success"`
+			}
+			modelManagementRequest(t, SetModelChannelStatus, "PUT", "/api/models/channel_status", map[string]any{"channel_id": high.Id, "model_name": "example-model", "enabled": false}, &response)
+			require.True(t, response.Success)
+			require.NoError(t, db.AutoMigrate(&model.ModelChannelDisable{}))
+			require.NoError(t, db.AutoMigrate(&model.ModelChannelDisable{}))
+			policy, err := model.LoadModelChannelPolicy(ctx)
+			require.NoError(t, err)
+			assert.True(t, policy.Blocks(high.Id, "example-model"))
+			assert.True(t, policy.Blocks(high.Id, "example-model@effort:high"))
+			assert.True(t, policy.Blocks(high.Id, "alias"))
+			assert.False(t, policy.Blocks(high.Id, "other-model"))
+			assert.False(t, policy.Blocks(low.Id, "example-model"))
+			choose := func(name, group string, pin int) (*model.Channel, *service.ChannelSelectError) {
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+				common.SetContextKey(c, constant.ContextKeyUsingGroup, group)
+				if pin != 0 {
+					service.GetChannelConstraints(c).AddPin(appdto.ChannelPin{ChannelId: pin, Source: appdto.PinSourceToken, Rank: appdto.PinRankToken})
+				}
+				ch, _, selectErr := service.SelectChannelForRequest(c, name, &service.RetryParam{Ctx: c, ModelName: name, TokenGroup: group})
+				return ch, selectErr
+			}
+			for _, memory := range []bool{false, true} {
+				common.MemoryCacheEnabled = memory
+				model.InitChannelCache()
+				chosen, selectErr := choose("example-model", "default", 0)
+				require.Nil(t, selectErr)
+				require.NotNil(t, chosen)
+				assert.Equal(t, low.Id, chosen.Id, "disabled high priority channel must be excluded before ranking")
+				chosen, selectErr = choose("other-model", "default", 0)
+				require.Nil(t, selectErr)
+				require.NotNil(t, chosen)
+				assert.Equal(t, high.Id, chosen.Id, "other models keep the original priority")
+				_, selectErr = choose("example-model", "default", high.Id)
+				require.NotNil(t, selectErr)
+				assert.Equal(t, service.ModelChannelDisabledCode, selectErr.Code)
+			}
+			common.MemoryCacheEnabled = false
+			require.NoError(t, model.SetModelChannelDisabled(ctx, low.Id, "example-model", true))
+			require.NoError(t, model.SetModelChannelDisabled(ctx, low.Id, "example-model", true), "repeated disable is idempotent")
+			_, selectErr := choose("example-model", "default", 0)
+			require.NotNil(t, selectErr)
+			assert.Equal(t, http.StatusForbidden, selectErr.StatusCode)
+			assert.Equal(t, service.ModelDisabledCode, selectErr.Code)
+			assert.Equal(t, service.ModelDisabledMessage, selectErr.Message)
+			_, selectErr = choose("example-model", "unrelated-group", 0)
+			require.NotNil(t, selectErr)
+			assert.NotEqual(t, service.ModelDisabledCode, selectErr.Code, "unrelated group must retain no-channel semantics")
+			names, err := service.FilterInvocableModelNames(ctx, []string{"example-model", "other-model"}, []string{"default"})
+			require.NoError(t, err)
+			assert.Equal(t, []string{"other-model"}, names)
+			connections, err := model.GetModelChannelConnections(ctx, "example-model", model.NameRuleExact)
+			require.NoError(t, err)
+			require.Len(t, connections, 2)
+			assert.False(t, connections[0].Enabled)
+			assert.False(t, connections[1].Enabled)
+			// Every model-bearing transport rejects before downstream billing/upstream work.
+			for _, endpoint := range []struct{ method, path string }{
+				{"POST", "/v1/chat/completions"}, {"POST", "/v1/responses"},
+				{"POST", "/v1/messages"}, {"POST", "/v1/images/generations"},
+				{"POST", "/v1/audio/transcriptions"}, {"POST", "/v1/videos"},
+				{"POST", "/v1beta/models/example-model:generateContent"},
+				{"POST", "/pg/chat/completions"},
+				{"GET", "/v1/realtime?model=example-model"},
+			} {
+				router := gin.New()
+				reached := false
+				router.Any("/*path", func(c *gin.Context) {
+					c.Set(common.RequestIdKey, "disable-request")
+					common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+				}, middleware.Distribute(), func(c *gin.Context) { reached = true; c.Status(204) })
+				request := httptest.NewRequest(endpoint.method, endpoint.path, strings.NewReader(`{"model":"example-model","stream":true}`))
+				request.Header.Set("Content-Type", "application/json")
+				recorder := httptest.NewRecorder()
+				router.ServeHTTP(recorder, request)
+				assert.Equal(t, http.StatusForbidden, recorder.Code, endpoint.path)
+				assert.False(t, reached)
+				var failure struct {
+					Error struct{ Code, Type, Message string }
+				}
+				require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &failure))
+				assert.Equal(t, "model_disabled", failure.Error.Code)
+				assert.Equal(t, "new_api_error", failure.Error.Type)
+				assert.Contains(t, failure.Error.Message, service.ModelDisabledMessage)
+				assert.Contains(t, failure.Error.Message, "disable-request")
+			}
+			// Existing task retrieval remains available even after all channels are denied.
+			poll := gin.New()
+			poll.GET("/v1/videos/:task_id", middleware.Distribute(), func(c *gin.Context) { c.Status(204) })
+			recorder := httptest.NewRecorder()
+			poll.ServeHTTP(recorder, httptest.NewRequest("GET", "/v1/videos/existing-task", nil))
+			assert.Equal(t, http.StatusNoContent, recorder.Code)
+			// A separate policy read observes enable immediately without channel-cache refresh.
+			require.NoError(t, model.SetModelChannelDisabled(ctx, low.Id, "example-model", false))
+			chosen, selectErr := choose("example-model", "default", 0)
+			require.Nil(t, selectErr)
+			require.NotNil(t, chosen)
+			assert.Equal(t, low.Id, chosen.Id)
+			assert.Error(t, model.SetModelChannelDisabled(ctx, high.Id, "not-configured", true))
+			var preserved model.Channel
+			require.NoError(t, db.First(&preserved, high.Id).Error)
+			assert.Equal(t, high.Models, preserved.Models)
+			assert.Equal(t, high.Key, preserved.Key)
+			// A whole-channel disable retains the legacy missing-model error.
+			for _, channel := range []*model.Channel{high, low} {
+				require.NoError(t, db.Model(channel).Update("status", common.ChannelStatusManuallyDisabled).Error)
+			}
+			_, selectErr = choose("example-model", "default", 0)
+			require.NotNil(t, selectErr)
+			assert.True(t, selectErr.NoAvailableChannel)
+			assert.Equal(t, types.ErrorCodeModelNotFound, selectErr.Code)
+			for _, channel := range []*model.Channel{high, low} {
+				require.NoError(t, model.UpdateAbilityStatus(channel.Id, false))
+			}
+			// Removing the model leaves dormant policy rows but must not turn a
+			// missing route into a model-disabled error, in either cache mode.
+			for _, channel := range []*model.Channel{high, low} {
+				channel.Models = "other-model,alias"
+				channel.Status = common.ChannelStatusEnabled
+				require.NoError(t, db.Model(channel).Updates(map[string]any{"models": channel.Models, "status": channel.Status}).Error)
+				require.NoError(t, channel.UpdateAbilities(db))
+			}
+			for _, memory := range []bool{false, true} {
+				common.MemoryCacheEnabled = memory
+				model.InitChannelCache()
+				_, selectErr = choose("example-model", "default", 0)
+				require.NotNil(t, selectErr)
+				assert.True(t, selectErr.NoAvailableChannel)
+				assert.Equal(t, types.ErrorCodeModelNotFound, selectErr.Code)
+			}
 		})
 	}
 }

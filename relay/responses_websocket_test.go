@@ -256,6 +256,22 @@ func TestResponsesWSChannelRoutingRequiresExplicitOptIn(t *testing.T) {
 	require.NotNil(t, httpChannel)
 	assert.Equal(t, legacy.Id, httpChannel.Id)
 
+	// Model restrictions apply without rebuilding the channel cache, including
+	// the next response.create on a connection that was already established.
+	require.NoError(t, model.SetModelChannelDisabled(c.Request.Context(), enabled.Id, "ws-model", true))
+	_, apiErr = selectResponsesWSChannel(c, "ws-model", params)
+	require.NotNil(t, apiErr)
+	assert.Equal(t, service.ModelDisabledCode, apiErr.GetErrorCode())
+	locked := &responsesWSSession{lockedChannelID: enabled.Id, lockedModel: "ws-model"}
+	apiErr = locked.restoreConnectionContext(c, "ws-model")
+	require.NotNil(t, apiErr)
+	assert.Equal(t, service.ModelChannelDisabledCode, apiErr.GetErrorCode())
+	require.NoError(t, model.SetModelChannelDisabled(c.Request.Context(), enabled.Id, "ws-model", false))
+	channel, apiErr = selectResponsesWSChannel(c, "ws-model", params)
+	require.Nil(t, apiErr)
+	require.NotNil(t, channel)
+	assert.Equal(t, enabled.Id, channel.Id)
+
 	// Disabling the saved setting takes effect for the next create on an existing session.
 	enabled.SetSetting(dto.ChannelSettings{ResponsesWebSocketEnabled: false})
 	require.NoError(t, database.Model(enabled).Update("setting", enabled.Setting).Error)

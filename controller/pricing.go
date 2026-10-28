@@ -57,6 +57,30 @@ func GetPricing(c *gin.Context) {
 
 	usableGroup = service.GetUserUsableGroups(group)
 	pricing = filterPricingByUsableGroups(pricing, usableGroup)
+	names := make([]string, 0, len(pricing))
+	groups := make([]string, 0, len(usableGroup))
+	for _, item := range pricing {
+		names = append(names, item.ModelName)
+	}
+	for name := range usableGroup {
+		groups = append(groups, name)
+	}
+	names, err := service.FilterInvocableModelNames(c.Request.Context(), names, groups)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	available := make(map[string]bool, len(names))
+	for _, name := range names {
+		available[name] = true
+	}
+	filtered := make([]model.Pricing, 0, len(pricing))
+	for _, item := range pricing {
+		if available[item.ModelName] {
+			filtered = append(filtered, item)
+		}
+	}
+	pricing = filtered
 	// check groupRatio contains usableGroup
 	for group := range ratio_setting.GetGroupRatioCopy() {
 		if _, ok := usableGroup[group]; !ok {

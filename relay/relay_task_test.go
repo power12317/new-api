@@ -40,7 +40,7 @@ func setupRelayChannelDB(t *testing.T) *gorm.DB {
 	sqlDB, err := database.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, database.AutoMigrate(&model.Channel{}))
+	require.NoError(t, database.AutoMigrate(&model.ModelChannelDisable{}, &model.Channel{}))
 	model.DB = database
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
 	common.MemoryCacheEnabled = false
@@ -219,6 +219,7 @@ func pinMappingOrderPlugin(t *testing.T, c *gin.Context, source string) {
 
 func newTaskSubmitContext(t *testing.T, originalModel, mapping string) (*gin.Context, *relaycommon.RelayInfo) {
 	t.Helper()
+	setupRelayChannelDB(t)
 	require.NoError(t, i18n.Init())
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

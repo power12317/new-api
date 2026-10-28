@@ -30,6 +30,17 @@ export interface BoundChannel {
   type: number
 }
 
+export interface ModelChannelConnection {
+  channel_id: number
+  channel_name: string
+  channel_type: number
+  channel_status: number
+  model_name: string
+  groups: string[]
+  enabled: boolean
+  directly_disabled: boolean
+}
+
 /**
  * Model entity from API
  */

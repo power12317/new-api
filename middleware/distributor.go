@@ -52,6 +52,10 @@ func Distribute() func(c *gin.Context) {
 			return
 		}
 		_, pinned, _ := constraints.ResolvedPin()
+		if policyErr := service.ApplyModelChannelPolicy(c, modelRequest.Model); policyErr != nil {
+			abortWithOpenAiMessage(c, policyErr.StatusCode, policyErr.Message, policyErr.Code)
+			return
+		}
 		if !pinned {
 			// Select a channel for the user
 			// check token model mapping
@@ -132,7 +136,12 @@ func Distribute() func(c *gin.Context) {
 			}
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
-		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+		if channel != nil {
+			if apiErr := SetupContextForSelectedChannel(c, channel, modelRequest.Model); apiErr != nil {
+				abortWithOpenAiMessage(c, apiErr.StatusCode, apiErr.Error(), apiErr.GetErrorCode())
+				return
+			}
+		}
 		c.Next()
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
 			service.RecordChannelAffinity(c, channel.Id)
@@ -564,6 +573,11 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	if channel == nil {
 		logTaskPluginChannelDecision(c, nil, modelName, "channel_rejected", "nil_channel")
 		return types.NewError(errors.New("channel is nil"), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+	}
+	if c.Request != nil && (c.Request.Method != http.MethodGet || c.Request.URL.Path == "/v1/realtime" || c.Request.URL.Path == "/v1/responses") {
+		if apiErr := service.CheckModelChannelAllowed(c.Request.Context(), channel.Id, modelName); apiErr != nil {
+			return apiErr
+		}
 	}
 	if expectedPlugin != "" && !channelMatchesExpectedTaskPlugin(c, channel, expectedPlugin) {
 		logTaskPluginChannelDecision(c, channel, modelName, "channel_rejected", "identity_mismatch")
